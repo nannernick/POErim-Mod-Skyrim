@@ -1,0 +1,8 @@
+Commit message:
+  Add GitHub Actions build, Vortex-ready artifact, README
+
+Files added:
+  .github/workflows/build.yml
+  README.md
+
+Files to delete: none
