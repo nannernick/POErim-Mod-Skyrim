@@ -7,6 +7,7 @@
 #include "DebugMenu.h"
 
 #include "Apply.h"
+#include "Crafting.h"
 #include "Distribute.h"
 #include "GridTint.h"
 #include "Persist.h"
@@ -26,6 +27,8 @@
 #include <algorithm>
 #include <array>
 #include <atomic>
+#include <cstdio>
+#include <cstdlib>
 #include <format>
 #include <functional>
 #include <mutex>
@@ -74,7 +77,14 @@ namespace
         RE::FormID    base{ 0 };
         std::uint32_t slots{ roll::kNone };
         bool          worn{ false };
+        // A plain item an orb could be used on: no enchantment, so no view.
+        // Listed so the crafting page has something for Transmutation.
+        bool          plain{ false };
+        int           plainLevel{ 1 };   // the level a plain item would roll at: the player's
         Records::View view;
+
+        [[nodiscard]] int Level() const { return plain ? plainLevel : view.record.itemLevel; }
+        [[nodiscard]] Crafting::Target Target() const { return { base, plain ? 0u : view.enchantment }; }
     };
 
     std::vector<Item> g_inventory;        // rolled items the player carries, as of the last refresh
@@ -98,21 +108,44 @@ namespace
             auto inventory = player->GetInventory([](RE::TESBoundObject& a_object) {
                 return a_object.Is(RE::FormType::Weapon) || a_object.Is(RE::FormType::Armor);
             });
+            const int playerLevel = (std::max)(1, static_cast<int>(player->GetLevel()));
             for (auto& [object, data] : inventory) {
                 const auto& entry = data.second;
-                if (!object || !entry || !entry->extraLists) {
+                if (!object) {
                     continue;
                 }
-                for (auto* xList : *entry->extraLists) {
-                    Item item;
-                    if (!xList || !Records::Lookup(xList, item.view)) {
-                        continue;
+                // Units that already carry an enchantment, ours or not; whatever
+                // is left of the count is plain.
+                std::int32_t enchanted = 0;
+                if (entry && entry->extraLists) {
+                    for (auto* xList : *entry->extraLists) {
+                        if (!xList) {
+                            continue;
+                        }
+                        if (xList->HasType<RE::ExtraEnchantment>()) {
+                            enchanted += (std::max)(1, xList->GetCount());
+                        }
+                        Item item;
+                        if (!Records::Lookup(xList, item.view)) {
+                            continue;
+                        }
+                        item.name = NameOf(object, xList);
+                        item.base = object->GetFormID();
+                        item.slots = Apply::SlotsOf(object);
+                        item.worn = xList->HasType(RE::ExtraDataType::kWorn) ||
+                                    xList->HasType(RE::ExtraDataType::kWornLeft);
+                        found.push_back(std::move(item));
                     }
-                    item.name = NameOf(object, xList);
+                }
+                const char* reason = nullptr;
+                if (data.first > enchanted && Crafting::Craftable(object, reason) &&
+                    Apply::IsGeneric(object)) {
+                    Item item;
+                    item.name = NameOf(object, nullptr);
                     item.base = object->GetFormID();
                     item.slots = Apply::SlotsOf(object);
-                    item.worn = xList->HasType(RE::ExtraDataType::kWorn) ||
-                                xList->HasType(RE::ExtraDataType::kWornLeft);
+                    item.plain = true;
+                    item.plainLevel = playerLevel;
                     found.push_back(std::move(item));
                 }
             }
@@ -206,11 +239,15 @@ namespace
         TextDisabled("A snapshot: press again after anything changes.");
 
         std::scoped_lock lock{ g_lock };
-        if (g_inventoryRead && g_inventory.empty()) {
+        if (g_inventoryRead && std::none_of(g_inventory.begin(), g_inventory.end(),
+                                   [](const Item& a_item) { return !a_item.plain; })) {
             TextDisabled("No rolled items found.");
         }
         for (std::size_t i = 0; i < g_inventory.size(); ++i) {
             const auto& item = g_inventory[i];
+            if (item.plain) {
+                continue;   // nothing rolled to inspect; the crafting page lists these
+            }
             const auto  label = std::format("{}{}##item{}", item.name, item.worn ? "  (worn)" : "", i);
             if (CollapsingHeader(label.c_str())) {
                 DrawItem(item);
@@ -218,7 +255,7 @@ namespace
         }
 
         Spacing();
-        TextDisabled("Editing affixes, spawning items and applying orbs arrive with the crafting build.");
+        TextDisabled("To change an item, use the Craft on items page.");
     }
 
     // ---- page: Craft simulator ----------------------------------------------
@@ -316,6 +353,7 @@ namespace
             std::scoped_lock lock{ g_lock };
             inventory = g_inventory;
         }
+        std::erase_if(inventory, [](const Item& a_item) { return a_item.plain; });
 
         std::vector<std::string> labels{ "A plain item" };
         labels.push_back(haveHovered ? std::format("Hovered: {}", hovered.name)
@@ -411,6 +449,200 @@ namespace
             const auto  overlay = std::format("{}  {}  ({:.1f}%)", roll::BandName(static_cast<roll::Band>(b)),
                 count, 100.0f * share);
             ProgressBar(share, ImVec2(-1.0f, 0.0f), overlay.c_str());
+        }
+    }
+
+    // ---- page: Craft on items ------------------------------------------------
+    //
+    // The real thing, on real items, for free. Every button here changes the
+    // save, so each needs the confirm box ticked -- it clears itself after one
+    // action -- and each writes a line to the log from Crafting.cpp.
+
+    Crafting::Target g_forgeSelect;   // under g_lock; follows the item through a craft
+    std::string      g_forgeReport;   // under g_lock
+
+    // GAME THREAD, after an action: re-read the inventory so the page shows the
+    // item as it now is, and keep it selected under its new enchantment.
+    void AfterAction(const Crafting::Target& a_target, const Crafting::Outcome& a_outcome,
+        std::string a_what)
+    {
+        ReadInventory();
+        std::scoped_lock lock{ g_lock };
+        g_forgeReport = std::format("{}: {}{}", a_what, a_outcome.ok ? "" : "refused -- ",
+            a_outcome.message.empty() ? "done" : a_outcome.message);
+        if (a_outcome.ok) {
+            g_forgeSelect = { a_target.base, a_outcome.enchantment };
+        }
+    }
+
+    void __stdcall RenderForge()
+    {
+        static int  s_orb = 0;
+        static bool s_confirm = false;
+        static char s_base[16] = "00012EB7";   // Iron Sword
+        static int  s_band = 1;
+        static int  s_level = 20;
+
+        TextWrapped("Uses orbs on the items you carry without spending any, edits single affixes, "
+                    "and spawns rolled items. All of it changes your save: keep a backup.");
+
+        if (Button("Read my inventory")) {
+            RunOnGameThread(ReadInventory);
+        }
+        SameLine();
+        TextDisabled("Lists rolled items and plain ones an orb could be used on.");
+
+        std::vector<Item> items;
+        Crafting::Target  selected;
+        std::string       report;
+        {
+            std::scoped_lock lock{ g_lock };
+            items = g_inventory;
+            selected = g_forgeSelect;
+            report = g_forgeReport;
+        }
+
+        const auto labelOf = [](const Item& a_item) {
+            return std::format("{}{}{}", a_item.name, a_item.plain ? "  (plain)" : "",
+                a_item.worn ? "  (worn)" : "");
+        };
+
+        int index = -1;
+        for (int i = 0; i < static_cast<int>(items.size()); ++i) {
+            const auto target = items[static_cast<std::size_t>(i)].Target();
+            if (target.base == selected.base && target.enchantment == selected.enchantment) {
+                index = i;
+                break;
+            }
+        }
+
+        const std::string preview = index >= 0 ? labelOf(items[static_cast<std::size_t>(index)])
+                                               : std::string{ "(choose an item)" };
+        if (BeginCombo("Item", preview.c_str())) {
+            for (int i = 0; i < static_cast<int>(items.size()); ++i) {
+                const auto& item = items[static_cast<std::size_t>(i)];
+                const auto  label = std::format("{}##forge{}", labelOf(item), i);
+                if (Selectable(label.c_str(), i == index)) {
+                    std::scoped_lock lock{ g_lock };
+                    g_forgeSelect = item.Target();
+                }
+            }
+            EndCombo();
+        }
+
+        Checkbox("Yes, change my save (clears after each action)", &s_confirm);
+
+        const auto* table = Records::Table();
+        if (index >= 0 && table) {
+            const Item& item = items[static_cast<std::size_t>(index)];
+            const auto  target = item.Target();
+
+            if (item.plain) {
+                Text("%s  --  plain, would roll at item level %d", item.name.c_str(), item.Level());
+            } else {
+                DrawItem(item);
+            }
+
+            SeparatorText("Orb");
+            std::array<const char*, roll::kOrbCount> orbNames{};
+            for (int i = 0; i < roll::kOrbCount; ++i) {
+                orbNames[static_cast<std::size_t>(i)] = roll::OrbName(static_cast<roll::Orb>(i));
+            }
+            Combo("Orb##forge", &s_orb, orbNames.data(), roll::kOrbCount);
+            const auto orb = static_cast<roll::Orb>(std::clamp(s_orb, 0, roll::kOrbCount - 1));
+
+            // The same question the orb itself will ask, asked early so the
+            // button can say why it is greyed out.
+            const roll::RollContext ctx{ item.Level(), item.slots, false };
+            const roll::Tuning      tuning;
+            const bool readable = item.plain || item.view.complete;
+            const auto verdict = readable
+                ? roll::CanCraft(orb, item.plain ? roll::RolledItem{} : item.view.rolled, ctx, *table, tuning)
+                : roll::CraftVerdict::kNotAffixable;
+            if (!readable) {
+                TextDisabled("This item has affixes the table no longer knows; it can't be crafted.");
+            } else if (verdict != roll::CraftVerdict::kOk) {
+                TextDisabled("%s", roll::Reason(verdict));
+            }
+
+            BeginDisabled(!s_confirm || verdict != roll::CraftVerdict::kOk);
+            if (Button("Apply orb (free)")) {
+                s_confirm = false;
+                RunOnGameThread([target, orb]() {
+                    AfterAction(target, Crafting::ApplyOrb(target, orb), roll::OrbName(orb));
+                });
+            }
+            EndDisabled();
+
+            if (!item.plain && readable) {
+                SeparatorText("Edit affixes");
+                for (int i = 0; i < static_cast<int>(item.view.rolled.affixes.size()); ++i) {
+                    const auto& rolled = item.view.rolled.affixes[static_cast<std::size_t>(i)];
+                    if (!rolled.affix) {
+                        continue;
+                    }
+                    const std::string id = rolled.affix->id;
+                    PushID(i);
+                    BeginDisabled(!s_confirm);
+                    if (Button("Remove")) {
+                        s_confirm = false;
+                        RunOnGameThread([target, id]() {
+                            AfterAction(target, Crafting::RemoveAffix(target, id), "Remove " + id);
+                        });
+                    }
+                    SameLine();
+                    if (Button("Reroll value")) {
+                        s_confirm = false;
+                        RunOnGameThread([target, id]() {
+                            AfterAction(target, Crafting::RerollValue(target, id), "Reroll " + id);
+                        });
+                    }
+                    EndDisabled();
+                    SameLine();
+                    Text("%s %s  tier %d  %.2f", roll::KindName(rolled.affix->kind),
+                        rolled.affix->name.c_str(), rolled.tier, rolled.value);
+                    PopID();
+                }
+            }
+        } else if (items.empty()) {
+            TextDisabled("Press \"Read my inventory\" first.");
+        }
+
+        SeparatorText("Spawn an item at my feet");
+        InputText("Base FormID (hex)", s_base, sizeof(s_base));
+        if (index >= 0) {
+            SameLine();
+            if (Button("Use the selected item's base")) {
+                const auto text = std::format("{:08X}", items[static_cast<std::size_t>(index)].base);
+                std::snprintf(s_base, sizeof(s_base), "%s", text.c_str());
+            }
+        }
+        std::array<const char*, roll::kBandCount> bandNames{};
+        for (int b = 0; b < roll::kBandCount; ++b) {
+            bandNames[static_cast<std::size_t>(b)] = roll::BandName(static_cast<roll::Band>(b));
+        }
+        Combo("Colour", &s_band, bandNames.data(), roll::kBandCount);
+        SliderInt("Item level##spawn", &s_level, 1, 80);
+        TextDisabled("Red needs item level 35. The item appears on the ground; pick it up as usual.");
+
+        BeginDisabled(!s_confirm);
+        if (Button("Spawn")) {
+            s_confirm = false;
+            const auto base = static_cast<RE::FormID>(std::strtoul(s_base, nullptr, 16));
+            const int  band = s_band;
+            const int  level = s_level;
+            RunOnGameThread([base, band, level]() {
+                const auto outcome = Crafting::SpawnAtFeet(base, band, level);
+                std::scoped_lock lock{ g_lock };
+                g_forgeReport = std::format("Spawn: {}{}", outcome.ok ? "" : "refused -- ",
+                    outcome.message);
+            });
+        }
+        EndDisabled();
+
+        if (!report.empty()) {
+            SeparatorText("Last action");
+            TextWrapped("%s", report.c_str());
         }
     }
 
@@ -620,6 +852,7 @@ void DebugMenu::Register()
     SKSEMenuFramework::AddSectionItem("Integration", RenderIntegration);
     SKSEMenuFramework::AddSectionItem("Inspect", RenderInspect);
     SKSEMenuFramework::AddSectionItem("Craft simulator", RenderCraft);
+    SKSEMenuFramework::AddSectionItem("Craft on items", RenderForge);
     SKSEMenuFramework::AddSectionItem("Co-save", RenderCoSave);
     SKSEMenuFramework::AddSectionItem("Log", RenderLog);
     g_available.store(true);
@@ -638,4 +871,6 @@ void DebugMenu::Forget()
     g_inventoryRead = false;
     g_orphanReport.clear();
     g_clearReport.clear();
+    g_forgeReport.clear();
+    g_forgeSelect = {};
 }

@@ -17,7 +17,8 @@ POErim is a fork of **Diablo In Skyrim (DiabloRim)** by tangwesley. All of the l
 | Tooltips: item level and affix lines; Alt shows Implicit / Prefixes / Suffixes with tier and roll range | **New in 1.1.0** |
 | Debug menu in SKSE Menu Framework | **New in 1.1.0** |
 | Crafting rules for the five orbs, in the offline harness and the in-game simulator | **New in 1.1.0** |
-| Using orbs on real items, orb items, orb drops, ARPG POV labels for orbs | Not yet: next builds |
+| Crafting on real items, from the debug menu (free orbs) | **New in 1.2.0** |
+| Orbs as items, orb drops, using orbs in Grid Inventory, ARPG POV labels for orbs | Not yet: next builds |
 
 ## Features
 
@@ -40,7 +41,7 @@ Prefixes are damage, leech, attributes, armour and unarmed damage; everything el
 
 **Tooltips** (Grid Inventory). Under the item's name: its item level, the implicit above a rule, then the prefixes and suffixes in the item's colour. Hold **Alt** to split them under Implicit / Prefixes (n/2) / Suffixes (n/2) headings and add each affix's tier and the range that tier can roll.
 
-**Crafting orbs** (rules only in this build):
+**Crafting orbs.** In this build orbs are used from the debug menu's *Craft on items* page and cost nothing; orb items and drops come next.
 
 | Orb | Works on | Does |
 |---|---|---|
@@ -50,6 +51,8 @@ Prefixes are damage, leech, attributes, armour and unarmed damage; everything el
 | Exalted Orb | full 2 + 2 | adds the implicit (needs item level 35) |
 | Chaos Orb | 2 or more prefixes/suffixes | rerolls them, keeps the count and the implicit |
 | Orb of Scouring | anything | removes everything, implicit included |
+
+What can be crafted: weapons, armour and jewellery that the loot system itself would roll. Not craftable: items with an enchantment of their own (vanilla-enchanted, player-enchanted, socketed), uniques and artifacts, quest items, and old items whose affixes are no longer in the table. An equipped item is taken off, crafted and put back on, so its new affixes apply at once.
 
 New affixes are drawn by the same rules as a drop: the item's slots, its stored item level, the prefix/suffix caps, no affix twice and no two affixes with the same effect. The colour is recalculated from the points, so it can change. An orb that cannot be used does nothing and is not spent.
 
@@ -96,10 +99,11 @@ With SKSE Menu Framework installed, press **F1** and open **POErim Debug Menu**:
 | Integration | Version, game runtime, and whether ARPG POV, Grid Inventory, Socketing and the affix table were found |
 | Inspect | The item last hovered in Grid Inventory, and every rolled item you carry: colour, points, item level, prefix/suffix/implicit counts, each affix with its kind, tier, value and range, the created enchantment's FormID, what the co-save holds for it |
 | Craft simulator | Uses one orb on a copy of an item N times and shows the colour split. Changes nothing in the game |
+| Craft on items | **Changes your save.** Pick a carried item (rolled or plain), then: apply any orb for free, remove a single affix, or reroll one affix's value. Also spawns any base item on the ground at a chosen colour and item level (enter its FormID). Each action needs the confirm box ticked and writes a log line |
 | Co-save | Counts of everything saved, a check for orphaned enchantments, and "clear rolled marks for this cell" (changes the save: asks first, and logs it) |
 | Log | Log level for this session, and where the log file is |
 
-Spawning items and orbs, editing affixes, applying orbs to real items, drop tuning and reloading the CSV arrive with the crafting and drop builds.
+Spawning orbs, drop tuning and reloading the CSV without a restart arrive with the drops build.
 
 ## Tuning offline: the roll harness
 

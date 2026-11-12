@@ -1,50 +1,42 @@
-# Push notes: POErim 1.1.0, prefixes / suffixes / implicit
+# Push notes: POErim 1.2.0, crafting on real items
 
 Do not commit this file.
 
 ## Commit message
 
 ```
-Prefixes, suffixes and an implicit slot
+POErim 1.2.0: crafting on real items from the debug menu
 
-- Affixes are now prefixes or suffixes (from their category, or an optional
-  "type" CSV column). Items carry up to 2 of each (MaxPrefixes/MaxSuffixes
-  in DiabloLoot.ini).
-- The fifth affix slot is an implicit: one stronger affix tied to the item
-  kind, from the new DiabloLoot_affixes_implicits.csv (explicit ranges x1.5),
-  only at item level 35+. No two affixes on an item share a magic effect.
-- Orbs: Exalted adds a prefix/suffix while there is room, the implicit on a
-  full 2+2 item; Chaos rerolls prefixes/suffixes and keeps the implicit;
-  Scouring removes everything.
-- Names: prefix affixes name the front, suffix affixes the back.
-- Tooltip: implicit above a rule, then prefixes and suffixes; holding Alt
-  adds Implicit / Prefixes (n/2) / Suffixes (n/2) headings with tier and
-  roll range.
-- Debug menu Inspect shows each affix's kind and the prefix/suffix counts.
-- Workflow packages the implicits table and runs the harness with it.
+- New Crafting module: finds the item in the player's inventory, runs the
+  orb rule, releases the old created enchantment through Apply::Release and
+  attaches the new roll with Apply::ToItem, then updates band, record
+  (flagged crafted), name and grid tint.
+- Plain items with instance data are enchanted in place; bare stack units go
+  through Apply::ToNewInstance (drop and pick up). Equipped items are taken
+  off, crafted and put back on.
+- Refused with a reason: items with their own enchantment, uniques, quest
+  items, unreadable legacy items.
+- Debug menu: new "Craft on items" page -- apply any orb for free, remove an
+  affix, reroll an affix's value, spawn a base item on the ground at a chosen
+  colour and item level. Each action needs a confirm tick and logs a line.
+- Inventory snapshot now also lists plain craftable items.
 ```
 
 ## New files
 
 ```
-data/DiabloLoot_affixes_implicits.csv
+src/Crafting.cpp
+src/Crafting.h
 ```
 
 ## Changed files
 
 ```
-.github/workflows/main.yml
+CMakeLists.txt
 README.md
-data/DiabloLoot.ini
-src/Config.cpp
 src/DebugMenu.cpp
-src/GridTint.cpp
-src/Records.cpp
-src/roll/AffixTable.cpp
-src/roll/Craft.cpp
-src/roll/Craft.h
-src/roll/Roll.h
-src/roll/Roller.cpp
+src/Version.h
+vcpkg.json
 ```
 
 ## Files to delete

@@ -16,7 +16,7 @@ set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 # fails on mismatched runtime.
 set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
 
-project(DiabloInSkyrim VERSION 1.1.0 LANGUAGES CXX)
+project(DiabloInSkyrim VERSION 1.2.0 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 23)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -144,6 +144,10 @@ list(APPEND SOURCES src/Sockets.h src/Sockets.cpp)
 # Per-item records: what each item rolled, kept in the co-save, and rebuilt from
 # the enchantment for items rolled before records existed.
 list(APPEND SOURCES src/Records.h src/Records.cpp)
+
+# Crafting on real items: the orb rules from src/roll/Craft carried out through
+# Apply's release and attach.
+list(APPEND SOURCES src/Crafting.h src/Crafting.cpp)
 
 # The debug pages in SKSE Menu Framework's F1 menu. include/SKSEMenuFramework.h
 # is that framework's public header, VENDORED: it resolves every call by name
