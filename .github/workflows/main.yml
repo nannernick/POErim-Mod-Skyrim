@@ -1,0 +1,79 @@
+name: Build POErim
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: windows-2022
+    env:
+      VCPKG_BINARY_SOURCES: "clear;files,${{ github.workspace }}/vcpkg_binary_cache,readwrite"
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Cache vcpkg packages
+        uses: actions/cache@v4
+        with:
+          path: ${{ github.workspace }}/vcpkg_binary_cache
+          key: vcpkg-${{ hashFiles('vcpkg.json') }}
+          restore-keys: vcpkg-
+
+      - name: Setup vcpkg
+        uses: lukka/run-vcpkg@v11
+        with:
+          vcpkgJsonGlob: 'vcpkg.json'
+          runVcpkgInstall: false
+
+      - name: Configure
+        run: >
+          cmake -B build -S . -G "Visual Studio 17 2022" -A x64
+          -DCMAKE_TOOLCHAIN_FILE="${{ github.workspace }}/vcpkg/scripts/buildsystems/vcpkg.cmake"
+          -DVCPKG_TARGET_TRIPLET=x64-windows-static
+
+      - name: Build plugin and harness
+        run: cmake --build build --config Release --target DiabloInSkyrim RollHarness
+
+      - name: Run the roll harness
+        shell: pwsh
+        run: |
+          $harness = "build/Release/RollHarness.exe"
+          & $harness data/DiabloLoot_affixes.csv --samples 20000 --levels 1,25,40
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+          & $harness data/DiabloLoot_affixes.csv --samples 20000 --levels 1,25,40 --craft transmute,augment,exalt,exalt,exalt,chaos,scour
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+
+      - name: Package
+        shell: pwsh
+        run: |
+          $plugins = "dist/SKSE/Plugins"
+          New-Item -ItemType Directory -Force -Path $plugins | Out-Null
+          Copy-Item build/Release/DiabloInSkyrim.dll $plugins
+          Copy-Item data/DiabloLoot.ini $plugins
+          Copy-Item data/DiabloLoot_affixes.csv $plugins
+          New-Item -ItemType Directory -Force -Path dist-optional/SKSE/Plugins | Out-Null
+          Copy-Item data/DiabloLoot_affixes_summermyst.csv dist-optional/SKSE/Plugins
+          New-Item -ItemType Directory -Force -Path dist-tools | Out-Null
+          Copy-Item build/Release/RollHarness.exe dist-tools
+          Copy-Item build/Release/DiabloInSkyrim.pdb dist-tools -ErrorAction SilentlyContinue
+          Copy-Item data/DiabloLoot_affixes.csv dist-tools
+
+      - name: Upload mod (Vortex-installable)
+        uses: actions/upload-artifact@v4
+        with:
+          name: POErim
+          path: dist/
+
+      - name: Upload Summermyst add-on (optional, Vortex-installable)
+        uses: actions/upload-artifact@v4
+        with:
+          name: POErim-Summermyst-Affixes
+          path: dist-optional/
+
+      - name: Upload tools (roll harness, PDB)
+        uses: actions/upload-artifact@v4
+        with:
+          name: POErim-Tools
+          path: dist-tools/
