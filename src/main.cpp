@@ -296,7 +296,7 @@ namespace
             Records::Forget();
             GridTint::ForgetTooltipItem();
             if (!g_arpgPov) {
-                RE::DebugNotification("POErim: ARPG POV is required and is not installed");
+                RE::SendHUDMessage::ShowHUDMessage("POErim: ARPG POV is required and is not installed");
             }
             // Actors already in the world at load time never fire
             // TESObjectLoadedEvent. Sweeping here is what makes an existing save
