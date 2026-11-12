@@ -24,7 +24,7 @@ jobs:
       - name: Setup vcpkg
         uses: lukka/run-vcpkg@v11
         with:
-          vcpkgJsonGlob: 'vcpkg.json'
+          vcpkgJsonGlob: 'grid/plugin/vcpkg.json'
           runVcpkgInstall: false
 
       - name: Configure
