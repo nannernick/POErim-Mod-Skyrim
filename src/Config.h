@@ -11,6 +11,7 @@
 // =============================================================================
 #pragma once
 
+#include "roll/Drops.h"
 #include "roll/Roll.h"
 
 #include <cstdint>
@@ -167,4 +168,41 @@ namespace Config
     [[nodiscard]] bool TooltipItemLevel();
     [[nodiscard]] bool TooltipAffixLines();
     [[nodiscard]] int  TooltipDetailKey();
+
+    // ---- crafting ---------------------------------------------------------
+    // The fifth and sixth affix floors (FifthAffixMinLevel / SixthAffixMinLevel)
+    // and the Vaal Orb rules are handed to the roll library on Load, so every
+    // Tuning built afterwards carries them; nothing else needs to ask.
+
+    // ---- orb drops --------------------------------------------------------
+    //
+    // Where a dead enemy's things end up. ★ALL_INVENTORY and ORBS_GROUND leave
+    // the enemy's gear in the corpse exactly as vanilla does, which is what
+    // ARPG POV's corpse loot expects; the two GROUND modes move weapons, armour
+    // and gold out onto the ground and are opt-in.
+    enum class GearMode
+    {
+        kAllGround,       // orbs, weapons, armour and gold on the ground
+        kAllInventory,    // everything in the corpse, orbs included
+        kOrbsGround,      // orbs on the ground, the rest in the corpse (default)
+        kItemsInventory,  // weapons and armour in the corpse; orbs and gold on the ground
+    };
+
+    [[nodiscard]] bool     OrbDropsEnabled();
+    void                   SetOrbDropsEnabled(bool a_enabled);
+    [[nodiscard]] GearMode EnemyGearMode();
+    void                   SetEnemyGearMode(GearMode a_mode);
+    [[nodiscard]] const char* GearModeName(GearMode a_mode);
+    [[nodiscard]] bool     OrbsInCorpse();       // OrbPlacement=INSIDE_CORPSE_INVENTORY
+    [[nodiscard]] bool     BundleGold();         // one ground pile instead of many
+    [[nodiscard]] int      OrbCleanupDays();     // 0 = never
+    void                   SetOrbCleanupDays(int a_days);
+    [[nodiscard]] bool     OrbDropNotify();      // a HUD line per drop
+    void                   SetOrbDropNotify(bool a_enabled);
+
+    // The live drop tuning. The debug menu edits it in place; Save writes it
+    // back to DiabloLoot.ini and Reset reloads it from there.
+    [[nodiscard]] roll::DropTuning& Drops();
+    bool                            SaveDrops();
+    void                            ResetDrops();
 }

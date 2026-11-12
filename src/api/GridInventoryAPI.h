@@ -91,6 +91,7 @@ namespace GridInvAPI
     inline constexpr std::uint32_t kMsgRegisterAnnot    = 0x4749414E;  // 'GIAN'
     inline constexpr std::uint32_t kMsgRegisterPricer   = 0x47495052;  // 'GIPR'
     inline constexpr std::uint32_t kMsgRegisterSocketer = 0x4749534B;  // 'GISK'
+    inline constexpr std::uint32_t kMsgRegisterApplier  = 0x47494150;  // 'GIAP'
 
     // ★(1.5.x) SUPPRESS THE GRID'S OWN WINDOW while yours sits over it.
     //
@@ -647,4 +648,57 @@ namespace GridInvAPI
                                   TooltipLine* out, std::uint32_t capacity);
     };
     static_assert(sizeof(Socketer) == 48, "Socketer is part of the ABI");
+
+    // ---- provider -> host: CURRENCY APPLIER ----------------------------------
+
+    // ★★A SIXTH TABLE, for the same reason as every one before it: its own
+    // slot, its own message, kABIVersion untouched, no released struct grows.
+    //
+    // A CURRENCY is an item that is used ON another item (a crafting orb). The
+    // host owns the gesture -- right-click a currency to put it on the cursor,
+    // click a target to use it, right-click or Esc to put it back -- and the
+    // applier owns the rules and the effect.
+    //
+    // ★THE CLICK ONLY QUEUES. The host never calls Commit from inside its
+    // ImGui frame: the click is parked and Commit runs on the GAME THREAD from
+    // the host's tick, after the host has found the target unit again by its
+    // identity (the list pointer from the click is not trusted a frame later).
+
+    enum ApplyVerdict : std::uint32_t
+    {
+        kApplyNo  = 0,   // refused: `reason` says why, nothing was consumed
+        kApplyYes = 1    // allowed (Query) / done (Commit)
+    };
+
+    inline constexpr std::uint32_t kApplyReasonLen = 128;   // bytes incl. NUL
+
+    struct Applier
+    {
+        std::uint32_t structSize;   // = sizeof(Applier)
+        std::uint32_t abiVersion;   // = kABIVersion
+        const char*   name;         // static string, diagnostics only
+        void*         self;         // opaque; handed back as the first argument
+
+        // Whether this base form is a currency the applier handles. Render
+        // thread, per tile on a right-click and per frame while one is held:
+        // compare ids, nothing more.
+        bool (*IsCurrency)(void* self, std::uint32_t base);
+
+        // Could `currency` be used on this unit? RENDER THREAD, read-only,
+        // asked while the cursor rests on a tile with a currency held.
+        //   xl      the unit's RE::ExtraDataList*, or nullptr when it has none;
+        //           borrowed for the call
+        //   reason  host-owned, `capacity` bytes; a short line on refusal
+        std::uint32_t (*Query)(void* self, std::uint32_t currency, std::uint32_t targetBase,
+                               const void* xl, char* reason, std::uint32_t capacity);
+
+        // Use ONE `currency` from the player's inventory on the unit. GAME
+        // THREAD ONLY. The applier consumes the currency itself, and only when
+        // the use happened. `reason` gets the outcome line either way.
+        //   xl      the unit's list as the host found it this frame, or nullptr
+        //           for a plain unit (the applier gives it an instance itself)
+        std::uint32_t (*Commit)(void* self, std::uint32_t currency, std::uint32_t targetBase,
+                                void* xl, char* reason, std::uint32_t capacity);
+    };
+    static_assert(sizeof(Applier) == 48, "Applier is part of the ABI");
 }

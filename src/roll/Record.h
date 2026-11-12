@@ -42,6 +42,10 @@ namespace roll
         kRecordLegacy = 1u << 0,
         // A crafting orb has changed this item at least once.
         kRecordCrafted = 1u << 1,
+        // A Vaal Orb has been used on it. No orb works on it again. This is
+        // the only place the fact is kept: MakeRecord sets it from
+        // RolledItem::corrupted and ToRolled hands it back.
+        kRecordCorrupted = 1u << 2,
     };
 
     struct ItemRecord

@@ -7,6 +7,7 @@
 #include "GridTint.h"
 
 #include "Config.h"
+#include "Orbs.h"
 #include "Persist.h"
 #include "Records.h"
 #include "Sockets.h"
@@ -26,6 +27,7 @@ namespace
 {
     std::atomic<bool> g_registered{ false };
     std::atomic<bool> g_offered{ false };
+    std::atomic<bool> g_applierSent{ false };
 
     // The host's service table, kept from its announcement: it is valid for
     // the life of the process. Null until then, and forever without the host.
@@ -199,6 +201,78 @@ namespace
     //   the affixes   one line each, in the band's colour. With the detail key
     //                 held (Alt by default) each also shows its tier and the
     //                 range that tier rolls -- how good THIS roll is.
+    // What an orb does, on the orb's own tooltip.
+    std::uint32_t OrbLines(roll::Orb a_orb, GridInvAPI::TooltipLine* a_out, std::uint32_t a_capacity)
+    {
+        const char* what = "";
+        switch (a_orb) {
+        case roll::Orb::kTransmute: what = "Adds one affix to a plain item"; break;
+        case roll::Orb::kAugment:   what = "Adds a second affix to an item with one"; break;
+        case roll::Orb::kAlchemy:   what = "Adds four affixes to a plain item"; break;
+        case roll::Orb::kExalt:     what = "Adds one affix to an item with two to five"; break;
+        case roll::Orb::kChaos:     what = "Rerolls every affix, keeping the count"; break;
+        case roll::Orb::kScour:     what = "Removes every affix"; break;
+        case roll::Orb::kDivine:    what = "Rerolls the values of every affix"; break;
+        case roll::Orb::kVaal:      what = "Corrupts an item, with unpredictable results"; break;
+        }
+        std::uint32_t n = 0;
+        if (n < a_capacity) {
+            PutLine(a_out[n++], what, Orbs::Color(a_orb));
+        }
+        if (n < a_capacity) {
+            PutLine(a_out[n++], "Right-click, then click an item to use. Shift keeps it.",
+                kHeadingColour, 0, true);
+        }
+        return n;
+    }
+
+    // ---- the currency applier ------------------------------------------------
+
+    void CopyReason(const std::string& a_text, char* a_out, std::uint32_t a_capacity)
+    {
+        if (!a_out || a_capacity == 0) {
+            return;
+        }
+        const auto n = (std::min)(a_text.size(), static_cast<std::size_t>(a_capacity - 1));
+        std::memcpy(a_out, a_text.data(), n);
+        a_out[n] = '\0';
+    }
+
+    bool IsCurrency(void*, std::uint32_t a_base)
+    {
+        return Orbs::OrbOf(a_base) >= 0;
+    }
+
+    std::uint32_t Query(void*, std::uint32_t a_currency, std::uint32_t a_target, const void* a_xl,
+        char* a_reason, std::uint32_t a_capacity)
+    {
+        const int orb = Orbs::OrbOf(a_currency);
+        if (orb < 0) {
+            CopyReason("Not an orb", a_reason, a_capacity);
+            return GridInvAPI::kApplyNo;
+        }
+        std::string reason;
+        const bool  ok = Orbs::Check(static_cast<roll::Orb>(orb), a_target,
+            static_cast<const RE::ExtraDataList*>(a_xl), reason);
+        CopyReason(reason, a_reason, a_capacity);
+        return ok ? GridInvAPI::kApplyYes : GridInvAPI::kApplyNo;
+    }
+
+    std::uint32_t Commit(void*, std::uint32_t a_currency, std::uint32_t a_target, void* a_xl,
+        char* a_reason, std::uint32_t a_capacity)
+    {
+        const int orb = Orbs::OrbOf(a_currency);
+        if (orb < 0) {
+            CopyReason("Not an orb", a_reason, a_capacity);
+            return GridInvAPI::kApplyNo;
+        }
+        std::string message;
+        const bool  ok = Orbs::Use(static_cast<roll::Orb>(orb), a_target,
+            static_cast<RE::ExtraDataList*>(a_xl), message);
+        CopyReason(message, a_reason, a_capacity);
+        return ok ? GridInvAPI::kApplyYes : GridInvAPI::kApplyNo;
+    }
+
     std::uint32_t GetLines(void*, std::uint32_t a_base, const void* a_xl,
         GridInvAPI::TooltipLine* a_out, std::uint32_t a_capacity)
     {
@@ -206,6 +280,9 @@ namespace
             return 0;
         }
 
+        if (const int orb = Orbs::OrbOf(a_base); orb >= 0) {
+            return OrbLines(static_cast<roll::Orb>(orb), a_out, a_capacity);
+        }
         const std::uint8_t band = BandOf(a_xl);
         if (band == 0) {
             return 0;
@@ -243,6 +320,10 @@ namespace
             PutLine(a_out[n],
                 std::format("Item Level {}{}", view.record.itemLevel, estimated ? " (estimated)" : ""),
                 0u, 0, rule);
+            ++n;
+        }
+        if (view.rolled.corrupted && n < a_capacity) {
+            PutLine(a_out[n], "Corrupted", Rgba(210, 40, 40));
             ++n;
         }
 
@@ -509,6 +590,21 @@ namespace
         // host accepted the table -- the version gate and the null-pointer check
         // both run inside its handler and refuse invisibly from here. The host
         // logs its own verdict; this line only proves we spoke.
+        static GridInvAPI::Applier applier{
+            sizeof(GridInvAPI::Applier),
+            GridInvAPI::kABIVersion,
+            "DiabloInSkyrim",
+            nullptr,
+            &IsCurrency,
+            &Query,
+            &Commit,
+        };
+        const bool sentApplier = SKSE::GetMessagingInterface()->Dispatch(
+            GridInvAPI::kMsgRegisterApplier, &applier, sizeof(applier),
+            GridInvAPI::kHostPluginName);
+        g_applierSent.store(sentApplier);
+        logger::info("grid tint: orb applier {}", sentApplier ? "delivered" : "not delivered");
+
         g_registered.store(sent);
         logger::info("grid tint: offered {} band(s) to {} -- tint {}, tooltip {}, price {}, sockets {}",
             std::size(kPalette), GridInvAPI::kHostPluginName,
@@ -591,4 +687,20 @@ void GridTint::ForgetTooltipItem()
 {
     g_hoverBase.store(0);
     g_hoverEnch.store(0);
+}
+
+bool GridTint::ApplierDelivered()
+{
+    return g_applierSent.load();
+}
+
+std::uint32_t GridTint::LinesFor(std::uint32_t a_base, const void* a_xl,
+    GridInvAPI::TooltipLine* a_out, std::uint32_t a_capacity)
+{
+    return GetLines(nullptr, a_base, a_xl, a_out, a_capacity);
+}
+
+std::uint32_t GridTint::PaletteFor(std::uint32_t* a_out, std::uint32_t a_capacity)
+{
+    return GetPalette(nullptr, a_out, a_capacity);
 }

@@ -85,6 +85,74 @@ namespace
     // tooltip or a craft -- never per tile per frame.
     std::unordered_map<RE::FormID, roll::ItemRecord> g_itemRecord;
 
+    // ---- orb drops (Orbs.cpp) -------------------------------------------------
+    // Actors whose death has already been turned into orbs, and the orb
+    // references placed on the ground with the in-game day they were placed.
+    // A lock of their own: written from the death drain, never near a tile.
+    constexpr std::uint32_t kDroppedActors = 'ODRP';
+    constexpr std::uint32_t kGroundOrbs = 'ORBR';
+    std::mutex                                    g_dropLock;
+    std::unordered_set<RE::FormID>                g_dropped;
+    std::unordered_map<RE::FormID, std::uint32_t> g_groundOrbs;
+
+    void SaveDrops(SKSE::SerializationInterface* a_intfc)
+    {
+        std::scoped_lock lock{ g_dropLock };
+        if (a_intfc->OpenRecord(kDroppedActors, kVersion)) {
+            const auto count = static_cast<std::uint32_t>(g_dropped.size());
+            bool       ok = a_intfc->WriteRecordData(count);
+            for (const auto formID : g_dropped) {
+                ok = ok && a_intfc->WriteRecordData(formID);
+            }
+            if (!ok) {
+                logger::error("save: the orb-drop record is short and will be rejected on load");
+            }
+        }
+        if (a_intfc->OpenRecord(kGroundOrbs, kVersion)) {
+            const auto count = static_cast<std::uint32_t>(g_groundOrbs.size());
+            bool       ok = a_intfc->WriteRecordData(count);
+            for (const auto& [formID, day] : g_groundOrbs) {
+                ok = ok && a_intfc->WriteRecordData(formID) && a_intfc->WriteRecordData(day);
+            }
+            if (!ok) {
+                logger::error("save: the ground-orb record is short and will be rejected on load");
+            }
+        }
+    }
+
+    void LoadDrops(SKSE::SerializationInterface* a_intfc, std::uint32_t a_type,
+        std::uint32_t a_version)
+    {
+        if (a_version != kVersion) {
+            logger::warn("load: orb record {:08X} is version {}, expected {}; skipped", a_type,
+                a_version, kVersion);
+            return;
+        }
+        std::uint32_t count = 0;
+        if (!a_intfc->ReadRecordData(count)) {
+            return;
+        }
+        std::scoped_lock lock{ g_dropLock };
+        for (std::uint32_t i = 0; i < count; ++i) {
+            RE::FormID    oldID = 0;
+            std::uint32_t day = 0;
+            if (!a_intfc->ReadRecordData(oldID) ||
+                (a_type == kGroundOrbs && !a_intfc->ReadRecordData(day))) {
+                logger::error("load: orb record {:08X} is short; kept what was read", a_type);
+                return;
+            }
+            RE::FormID newID = 0;
+            if (!a_intfc->ResolveFormID(oldID, newID)) {
+                continue;
+            }
+            if (a_type == kDroppedActors) {
+                g_dropped.insert(newID);
+            } else {
+                g_groundOrbs[newID] = day;
+            }
+        }
+    }
+
     void SaveItemRecords(SKSE::SerializationInterface* a_intfc)
     {
         std::scoped_lock lock{ g_tierLock };
@@ -353,6 +421,7 @@ namespace
         SaveAffixEnchs(a_intfc);
         SaveVendorDays(a_intfc);
         SaveItemRecords(a_intfc);
+        SaveDrops(a_intfc);
     }
 
     // One kEnchTiers record. Split out so the dispatch in LoadCallback stays a
@@ -479,6 +548,10 @@ namespace
                 LoadItemRecords(a_intfc, version);
                 continue;
             }
+            if (type == kDroppedActors || type == kGroundOrbs) {
+                LoadDrops(a_intfc, type, version);
+                continue;
+            }
             if (type != kRolledActors) {
                 logger::warn("load: skipping unknown record type {:08X}", type);
                 continue;
@@ -545,6 +618,11 @@ namespace
             g_affixEnch.clear();
             g_vendorDay.clear();
             g_itemRecord.clear();
+        }
+        {
+            std::scoped_lock dropLock{ g_dropLock };
+            g_dropped.clear();
+            g_groundOrbs.clear();
         }
 
         std::scoped_lock lock{ g_lock };
@@ -766,4 +844,60 @@ std::vector<RE::FormID> Persist::KnownEnchantments()
         }
     }
     return { all.begin(), all.end() };
+}
+
+// ---- orb drops ---------------------------------------------------------------
+
+bool Persist::MarkDropped(RE::FormID a_actor)
+{
+    if (a_actor == 0) {
+        return false;
+    }
+    std::scoped_lock lock{ g_dropLock };
+    return g_dropped.insert(a_actor).second;
+}
+
+bool Persist::WasDropped(RE::FormID a_actor)
+{
+    std::scoped_lock lock{ g_dropLock };
+    return g_dropped.contains(a_actor);
+}
+
+bool Persist::ForgetDropped(RE::FormID a_actor)
+{
+    std::scoped_lock lock{ g_dropLock };
+    return g_dropped.erase(a_actor) > 0;
+}
+
+std::size_t Persist::DroppedCount()
+{
+    std::scoped_lock lock{ g_dropLock };
+    return g_dropped.size();
+}
+
+void Persist::NoteGroundOrb(RE::FormID a_ref, std::uint32_t a_day)
+{
+    if (a_ref == 0) {
+        return;
+    }
+    std::scoped_lock lock{ g_dropLock };
+    g_groundOrbs[a_ref] = a_day;
+}
+
+std::vector<std::pair<RE::FormID, std::uint32_t>> Persist::GroundOrbs()
+{
+    std::scoped_lock lock{ g_dropLock };
+    return { g_groundOrbs.begin(), g_groundOrbs.end() };
+}
+
+void Persist::ForgetGroundOrb(RE::FormID a_ref)
+{
+    std::scoped_lock lock{ g_dropLock };
+    g_groundOrbs.erase(a_ref);
+}
+
+std::size_t Persist::GroundOrbCount()
+{
+    std::scoped_lock lock{ g_dropLock };
+    return g_groundOrbs.size();
 }

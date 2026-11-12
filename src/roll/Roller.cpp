@@ -14,9 +14,10 @@
 //    4. what value        -- uniform inside that tier's band
 //
 //  Item tier is the sum of the points, which is what makes it a power budget
-//  rather than a label: 0-15 falls out of 0-5 affixes worth 1-3 each. The fifth
-//  affix is gated on item level (Tuning::fifthAffixMinLevel), and with it the
-//  red band, which nothing short of five affixes can reach.
+//  rather than a label: 0-18 falls out of 0-6 affixes worth 1-3 each. The fifth
+//  and sixth affix are gated on item level (Tuning::fifthAffixMinLevel and
+//  sixthAffixMinLevel), and with the fifth the red band, which nothing short of
+//  five affixes can reach.
 // =============================================================================
 
 #include "Roll.h"
@@ -358,7 +359,7 @@ namespace roll
             return std::any_of(a_item.affixes.begin(), a_item.affixes.end(),
                 [&](const RolledAffix& a_have) {
                     return a_have.affix == a_candidate ||
-                           (!a_have.affix->mgef.empty() && a_have.affix->mgef == a_candidate->mgef);
+                           a_have.affix->group == a_candidate->group;
                 });
         });
     }
@@ -462,8 +463,14 @@ namespace roll
         //
         // Done BEFORE the noWhite adjustment so its "every weight is zero"
         // fallback sees the weights that will actually be drawn from.
+        //
+        // The sixth affix has the same kind of floor, a few levels on.
         if (a_ctx.itemLevel < a_tuning.fifthAffixMinLevel) {
-            countWeights[static_cast<std::size_t>(kMaxAffixes)] = 0;
+            countWeights[5] = 0;
+            countWeights[6] = 0;
+        }
+        if (a_ctx.itemLevel < a_tuning.sixthAffixMinLevel) {
+            countWeights[6] = 0;
         }
 
         if (a_ctx.noWhite) {
@@ -488,36 +495,14 @@ namespace roll
 
         const auto tierWeights = TierWeightsFor(a_tuning, a_ctx.itemLevel);
 
-        // The pool and the draw are functions of their own (below) because a
-        // crafting orb adds an affix to an item by exactly the same rules a
-        // fresh roll does -- see Craft.cpp. One implementation, two callers.
-        // ★THE LAST SLOT IS THE IMPLICIT. The count curve still says how many
-        // affixes the item gets, 0 to 5; the first four are explicit, capped at
-        // MaxPrefixes / MaxSuffixes, and a fifth is the implicit. The curve's
-        // fifth-affix weight is already zero below fifthAffixMinLevel (above),
-        // so the implicit inherits the promise that red starts at 35 without a
-        // gate of its own. Drawn FIRST, so the explicits can avoid its effect.
+        // ★EXPLICIT AFFIXES ONLY. The count curve says how many the item gets,
+        // 0 to 6, capped at MaxPrefixes + MaxSuffixes. A drop never rolls an
+        // implicit: that slot sits outside the cap and only a Vaal Orb fills it
+        // (Craft.cpp).
         const int explicitCap = MaxPrefixes() + MaxSuffixes();
         const int explicitWanted = std::min(wanted, explicitCap);
-        const bool implicitWanted = wanted > explicitCap;
 
-        result.affixes.reserve(static_cast<std::size_t>(wanted));
-
-        if (implicitWanted) {
-            auto        implicits = ImplicitPool(a_table, a_ctx);
-            RolledAffix rolled;
-            while (!implicits.empty()) {
-                const auto drawn = DrawAffix(implicits, a_ctx, tierWeights, a_rng, rolled);
-                if (drawn == Draw::kDrawn) {
-                    result.tier += rolled.points;
-                    result.affixes.push_back(rolled);
-                    break;
-                }
-                if (drawn == Draw::kExhausted) {
-                    break;
-                }
-            }
-        }
+        result.affixes.reserve(static_cast<std::size_t>(explicitWanted));
 
         // The pool and the draw are functions of their own (below) because a
         // crafting orb adds an affix to an item by exactly the same rules a

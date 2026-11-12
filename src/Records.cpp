@@ -91,8 +91,11 @@ namespace
         if (a_out.affixes.empty() || a_out.affixes.size() > static_cast<std::size_t>(roll::kMaxAffixes)) {
             return false;
         }
-        if (a_out.affixes.size() == static_cast<std::size_t>(roll::kMaxAffixes)) {
+        if (a_out.affixes.size() >= 5) {
             minLevel = (std::max)(minLevel, FifthAffixFloor());
+        }
+        if (a_out.affixes.size() >= 6) {
+            minLevel = (std::max)(minLevel, roll::Tuning{}.sixthAffixMinLevel);
         }
 
         int level = minLevel;

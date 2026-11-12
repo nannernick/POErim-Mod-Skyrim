@@ -13,6 +13,8 @@
 #include <format>
 #include <fstream>
 #include <string>
+#include <utility>
+#include <vector>
 
 namespace
 {
@@ -66,12 +68,30 @@ namespace
 
     // How many prefixes and suffixes an item may carry. Read into the roller
     // (roll::SetAffixCaps) with the other settings.
-    int g_maxPrefixes = 2;
-    int g_maxSuffixes = 2;
+    int g_maxPrefixes = 3;
+    int g_maxSuffixes = 3;
     bool  g_vendorStock = true;
     bool  g_priceHook = true;
     bool  g_sellPricesScaled = false;
     float g_priceMult[roll::kBandCount] = { 1.0f, 1.5f, 2.0f, 3.0f, 5.0f, 10.0f };
+
+    int              g_fifthMinLevel = 35;
+    int              g_sixthMinLevel = 40;
+    roll::VaalRules  g_vaal;
+    bool             g_orbDrops = true;
+    Config::GearMode g_gearMode = Config::GearMode::kOrbsGround;
+    bool             g_orbsInCorpse = false;
+    bool             g_bundleGold = true;
+    int              g_orbCleanupDays = 3;
+    bool             g_orbDropNotify = false;
+    roll::DropTuning g_drops;
+
+    constexpr const char* kOrbWeightKeys[roll::kOrbCount]{ "orbweighttransmute",
+        "orbweightaugment", "orbweightalchemy", "orbweightexalt", "orbweightchaos",
+        "orbweightscour", "orbweightdivine", "orbweightvaal" };
+    constexpr const char* kOrbWeightNames[roll::kOrbCount]{ "OrbWeightTransmute",
+        "OrbWeightAugment", "OrbWeightAlchemy", "OrbWeightExalt", "OrbWeightChaos",
+        "OrbWeightScour", "OrbWeightDivine", "OrbWeightVaal" };
 
     std::string Trim(std::string a_text)
     {
@@ -213,9 +233,9 @@ void Config::Load()
         } else if (key == "wielderbuffs") {
             g_wielderBuffs = AsBool(value);
         } else if (key == "maxprefixes") {
-            g_maxPrefixes = static_cast<int>(AsFloat(value, 2.0f, 0.0f, 5.0f));
+            g_maxPrefixes = static_cast<int>(AsFloat(value, 3.0f, 0.0f, 6.0f));
         } else if (key == "maxsuffixes") {
-            g_maxSuffixes = static_cast<int>(AsFloat(value, 2.0f, 0.0f, 5.0f));
+            g_maxSuffixes = static_cast<int>(AsFloat(value, 3.0f, 0.0f, 6.0f));
         } else if (key == "tooltipitemlevel") {
             g_tooltipItemLevel = AsBool(value);
         } else if (key == "tooltipaffixlines") {
@@ -238,6 +258,72 @@ void Config::Load()
             ReadPriceMult(roll::Band::kOrange, value);
         } else if (key == "pricemultred") {
             ReadPriceMult(roll::Band::kRed, value);
+        } else if (key == "fifthaffixminlevel") {
+            g_fifthMinLevel = static_cast<int>(AsFloat(value, 35.0f, 1.0f, 255.0f));
+        } else if (key == "sixthaffixminlevel") {
+            g_sixthMinLevel = static_cast<int>(AsFloat(value, 40.0f, 1.0f, 255.0f));
+        } else if (key == "vaalcandestroy") {
+            g_vaal.canDestroy = AsBool(value);
+        } else if (key == "vaalweightdestroy") {
+            g_vaal.weightDestroy = static_cast<int>(AsFloat(value, 1.0f, 0.0f, 1000.0f));
+        } else if (key == "vaalweightvalues") {
+            g_vaal.weightValues = static_cast<int>(AsFloat(value, 1.0f, 0.0f, 1000.0f));
+        } else if (key == "vaalweightimplicit") {
+            g_vaal.weightImplicit = static_cast<int>(AsFloat(value, 1.0f, 0.0f, 1000.0f));
+        } else if (key == "vaalweightreroll") {
+            g_vaal.weightReroll = static_cast<int>(AsFloat(value, 1.0f, 0.0f, 1000.0f));
+        } else if (key == "orbdrops") {
+            g_orbDrops = AsBool(value);
+        } else if (key == "enemygearmode") {
+            std::string mode = value;
+            std::transform(mode.begin(), mode.end(), mode.begin(),
+                [](unsigned char a_ch) { return static_cast<char>(std::toupper(a_ch)); });
+            if (mode == "ALL_GROUND") {
+                g_gearMode = Config::GearMode::kAllGround;
+            } else if (mode == "ALL_INVENTORY") {
+                g_gearMode = Config::GearMode::kAllInventory;
+            } else if (mode == "ORBS_GROUND") {
+                g_gearMode = Config::GearMode::kOrbsGround;
+            } else if (mode == "ITEMS_INVENTORY") {
+                g_gearMode = Config::GearMode::kItemsInventory;
+            } else {
+                logger::warn("{}: EnemyGearMode '{}' is not one of ALL_GROUND, ALL_INVENTORY, "
+                             "ORBS_GROUND, ITEMS_INVENTORY; keeping ORBS_GROUND", kPath, value);
+            }
+        } else if (key == "orbplacement") {
+            std::string mode = value;
+            std::transform(mode.begin(), mode.end(), mode.begin(),
+                [](unsigned char a_ch) { return static_cast<char>(std::toupper(a_ch)); });
+            g_orbsInCorpse = mode == "INSIDE_CORPSE_INVENTORY";
+        } else if (key == "bundlegold") {
+            g_bundleGold = AsBool(value);
+        } else if (key == "orbcleanupdays") {
+            g_orbCleanupDays = static_cast<int>(AsFloat(value, 3.0f, 0.0f, 365.0f));
+        } else if (key == "orbdropnotify") {
+            g_orbDropNotify = AsBool(value);
+        } else if (key == "orbdropmultiplier") {
+            g_drops.multiplier = AsFloat(value, 1.0f, 0.0f, 20.0f);
+        } else if (key == "orbdropchance") {
+            g_drops.chance = AsFloat(value, 0.85f, 0.0f, 1.0f);
+        } else if (key == "orbbasecount") {
+            g_drops.baseCount = AsFloat(value, 1.5f, 0.0f, 20.0f);
+        } else if (key == "orbcountperlevel") {
+            g_drops.countPerLevel = AsFloat(value, 0.03f, 0.0f, 2.0f);
+        } else if (key == "orbmaxcount") {
+            g_drops.maxCount = AsFloat(value, 4.0f, 0.0f, 64.0f);
+        } else if (key.rfind("orbweight", 0) == 0) {
+            bool known = false;
+            for (int i = 0; i < roll::kOrbCount; ++i) {
+                if (key == kOrbWeightKeys[i]) {
+                    g_drops.weights[static_cast<std::size_t>(i)] =
+                        static_cast<int>(AsFloat(value, 0.0f, 0.0f, 100000.0f));
+                    known = true;
+                }
+            }
+            if (!known) {
+                logger::warn("{}: unknown setting '{}'", kPath, key);
+                continue;
+            }
         } else {
             // Named, because a silently ignored setting is how someone spends an
             // evening wondering why their edit did nothing.
@@ -261,6 +347,15 @@ void Config::Load()
     roll::SetTierMark(g_tierMarker);
     roll::SetTierMarkInName(g_tierMarkerInName);
     roll::SetAffixCaps(g_maxPrefixes, g_maxSuffixes);
+    roll::SetAffixLevelGates(g_fifthMinLevel, g_sixthMinLevel);
+    roll::SetDefaultVaalRules(g_vaal);
+    logger::info("{}: affixes {} prefix + {} suffix, fifth from level {}, sixth from {}; Vaal "
+                 "{} (weights {}/{}/{}/{}); orb drops {} ({}, orbs {}), cleanup after {} day(s)",
+        kPath, g_maxPrefixes, g_maxSuffixes, roll::DefaultFifthAffixMinLevel(),
+        roll::DefaultSixthAffixMinLevel(), g_vaal.canDestroy ? "can destroy" : "never destroys",
+        g_vaal.weightDestroy, g_vaal.weightValues, g_vaal.weightImplicit, g_vaal.weightReroll,
+        g_orbDrops ? "on" : "OFF", Config::GearModeName(g_gearMode),
+        g_orbsInCorpse ? "in the corpse" : "by gear mode", g_orbCleanupDays);
 
     logger::info(
         "{}: {} setting(s) applied -- distribution {}, quest rewards {}, discovery {}, "
@@ -386,4 +481,107 @@ bool Config::TooltipAffixLines()
 int Config::TooltipDetailKey()
 {
     return g_tooltipDetailKey;
+}
+
+// ---- orb drops ------------------------------------------------------------------
+
+bool Config::OrbDropsEnabled() { return g_orbDrops; }
+void Config::SetOrbDropsEnabled(bool a_enabled) { g_orbDrops = a_enabled; }
+Config::GearMode Config::EnemyGearMode() { return g_gearMode; }
+void Config::SetEnemyGearMode(GearMode a_mode) { g_gearMode = a_mode; }
+bool Config::OrbsInCorpse() { return g_orbsInCorpse; }
+bool Config::BundleGold() { return g_bundleGold; }
+int  Config::OrbCleanupDays() { return g_orbCleanupDays; }
+void Config::SetOrbCleanupDays(int a_days) { g_orbCleanupDays = std::clamp(a_days, 0, 365); }
+bool Config::OrbDropNotify() { return g_orbDropNotify; }
+void Config::SetOrbDropNotify(bool a_enabled) { g_orbDropNotify = a_enabled; }
+roll::DropTuning& Config::Drops() { return g_drops; }
+
+const char* Config::GearModeName(GearMode a_mode)
+{
+    switch (a_mode) {
+    case GearMode::kAllGround:      return "ALL_GROUND";
+    case GearMode::kAllInventory:   return "ALL_INVENTORY";
+    case GearMode::kOrbsGround:     return "ORBS_GROUND";
+    case GearMode::kItemsInventory: return "ITEMS_INVENTORY";
+    }
+    return "?";
+}
+
+void Config::ResetDrops()
+{
+    // Load() only assigns what the file names, so the defaults go back first.
+    g_drops = roll::DropTuning{};
+    g_orbCleanupDays = 3;
+    g_orbDropNotify = false;
+    Load();
+}
+
+// Rewrites each drop key's value in place (or appends it under [Drops]),
+// leaving every other line and comment of the player's file as it was.
+bool Config::SaveDrops()
+{
+    std::vector<std::pair<std::string, std::string>> keys{
+        { "OrbDrops", g_orbDrops ? "1" : "0" },
+        { "EnemyGearMode", GearModeName(g_gearMode) },
+        { "OrbDropMultiplier", std::format("{:.2f}", g_drops.multiplier) },
+        { "OrbDropChance", std::format("{:.3f}", g_drops.chance) },
+        { "OrbBaseCount", std::format("{:.2f}", g_drops.baseCount) },
+        { "OrbCountPerLevel", std::format("{:.3f}", g_drops.countPerLevel) },
+        { "OrbMaxCount", std::format("{:.1f}", g_drops.maxCount) },
+        { "OrbCleanupDays", std::to_string(g_orbCleanupDays) },
+        { "OrbDropNotify", g_orbDropNotify ? "1" : "0" },
+    };
+    for (int i = 0; i < roll::kOrbCount; ++i) {
+        keys.emplace_back(kOrbWeightNames[i], std::to_string(g_drops.weights[static_cast<std::size_t>(i)]));
+    }
+
+    std::vector<std::string> lines;
+    {
+        std::ifstream in{ kPath };
+        std::string   line;
+        while (std::getline(in, line)) {
+            lines.push_back(line);
+        }
+    }
+    const auto lower = [](std::string a_text) {
+        std::transform(a_text.begin(), a_text.end(), a_text.begin(),
+            [](unsigned char a_ch) { return static_cast<char>(std::tolower(a_ch)); });
+        return a_text;
+    };
+    std::vector<std::string> missing;
+    for (const auto& [key, value] : keys) {
+        bool done = false;
+        for (auto& line : lines) {
+            const auto trimmed = Trim(line);
+            const auto eq = trimmed.find('=');
+            if (eq == std::string::npos || trimmed.empty() || trimmed[0] == '#' || trimmed[0] == ';') {
+                continue;
+            }
+            if (lower(Trim(trimmed.substr(0, eq))) == lower(key)) {
+                line = key + "=" + value;
+                done = true;
+                break;
+            }
+        }
+        if (!done) {
+            missing.push_back(key + "=" + value);
+        }
+    }
+    if (!missing.empty()) {
+        lines.emplace_back("");
+        lines.emplace_back("[Drops]");
+        lines.insert(lines.end(), missing.begin(), missing.end());
+    }
+    std::ofstream out{ kPath, std::ios::trunc };
+    if (!out) {
+        logger::error("{}: could not be written; drop tuning not saved", kPath);
+        return false;
+    }
+    for (const auto& line : lines) {
+        out << line << '\n';
+    }
+    logger::info("{}: drop tuning saved ({} key(s) updated, {} added)", kPath,
+        keys.size() - missing.size(), missing.size());
+    return true;
 }

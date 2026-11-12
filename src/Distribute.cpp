@@ -971,6 +971,7 @@ namespace
             // that moment is a mark that is wrong for the rest of the save --
             // nothing ever revisits it.
             const auto formID = a_event->object->GetFormID();
+            Persist::ForgetDropped(formID);   // a respawned actor may drop orbs again
             if (Persist::ForgetRolled(formID)) {
                 std::scoped_lock lock{ g_statsLock };
                 ++g_stats.marksForgotten;
@@ -1070,6 +1071,9 @@ void Distribute::Install()
 void Distribute::SetTable(const roll::AffixTable& a_table)
 {
     g_table = &a_table;
+    // Rebuilt here, after Config::Load, so the affix level gates from
+    // DiabloLoot.ini apply: a namespace-scope Tuning was built at DLL load.
+    g_tuning = roll::Tuning{};
 }
 
 void Distribute::SweepLoaded()

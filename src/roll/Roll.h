@@ -96,11 +96,15 @@ namespace roll
     //
     // Path of Exile's split, on this mod's points model. An item carries up to
     // MaxPrefixes() prefixes and MaxSuffixes() suffixes -- its EXPLICIT affixes,
-    // the ones the orbs work on -- and the last affix slot is an IMPLICIT: one
-    // stronger affix tied to the kind of item (a ring's resistance, a weapon's
-    // elemental damage), which only items at Tuning::fifthAffixMinLevel can
-    // carry. Two plus two plus one is the five the band arithmetic was built
-    // around, so red still needs a full item and still starts at 35.
+    // the ones the orbs work on; three and three by default, six in all. The
+    // fifth and sixth only arrive at Tuning::fifthAffixMinLevel and
+    // sixthAffixMinLevel.
+    //
+    // An IMPLICIT is a separate slot OUTSIDE that cap: one stronger affix tied
+    // to the kind of item (a ring's resistance, a weapon's elemental damage).
+    // Nothing rolls one any more -- a Vaal Orb's corruption is the only way an
+    // item gains it -- so a finished item can read "6 + implicit". Items rolled
+    // by 1.1/1.2, where the implicit was the fifth slot, keep theirs.
     //
     // The kind is the CSV's eighteenth column. A table without it -- an add-on
     // written before the column existed -- gets one from the affix's category
@@ -130,6 +134,13 @@ namespace roll
         std::string            mgef;    // resolved by the engine layer, not here
         std::string            prefix;
         std::string            suffix;
+        // The MOD GROUP: an item never carries two affixes of one group. The
+        // CSV's optional nineteenth column; blank, it is the affixId, and
+        // affixes that share a magic effect are put in one group automatically
+        // (two of those would merge into a single line in the enchantment and
+        // could not be told apart again).
+        std::string            group;
+        bool                   groupExplicit{ false };
         std::uint32_t          slots{ kNone };
         bool                   npcExclude{ false };
         AffixKind              kind{ AffixKind::kSuffix };
@@ -170,9 +181,34 @@ namespace roll
     // Tier III add up to. Everything sized by "how many affixes" -- the count
     // curve, the harness's histogram -- reads these rather than repeating the
     // number, so the fifth affix was a change here and not a hunt.
-    inline constexpr int kMaxAffixes = 5;
+    //
+    // Six EXPLICIT affixes (three prefixes, three suffixes) and one implicit
+    // slot beside them, so the point total tops out at seven affixes' worth.
+    inline constexpr int kMaxAffixes = 6;
+    inline constexpr int kMaxImplicits = 1;
     inline constexpr int kMaxAffixPoints = 3;
-    inline constexpr int kMaxTier = kMaxAffixes * kMaxAffixPoints;  // 15
+    inline constexpr int kMaxTier = (kMaxAffixes + kMaxImplicits) * kMaxAffixPoints;  // 21
+
+    // The level floors for the fifth and sixth affix that a default-constructed
+    // Tuning starts from. Process-wide for the same reason the caps are: every
+    // roll site and every orb builds its own Tuning, and they must all agree
+    // with DiabloLoot.ini. Set once on load; 35 and 40 until then.
+    void SetAffixLevelGates(int a_fifthMinLevel, int a_sixthMinLevel) noexcept;
+    [[nodiscard]] int DefaultFifthAffixMinLevel() noexcept;
+    [[nodiscard]] int DefaultSixthAffixMinLevel() noexcept;
+
+    // What a Vaal Orb may do (Craft.h). Weights are relative; an outcome the
+    // item cannot take is left out of the draw.
+    struct VaalRules
+    {
+        bool canDestroy{ true };
+        int  weightDestroy{ 1 };
+        int  weightValues{ 1 };
+        int  weightImplicit{ 1 };
+        int  weightReroll{ 1 };
+    };
+    void SetDefaultVaalRules(const VaalRules& a_rules) noexcept;
+    [[nodiscard]] VaalRules DefaultVaalRules() noexcept;
 
     // ------------------------------------------------------------- the curves
     // Everything tunable lives here so the harness can sweep it without a
@@ -180,7 +216,7 @@ namespace roll
     struct Curve
     {
         int                                level{ 0 };
-        std::array<int, kMaxAffixes + 1>   countWeights{};       // 0..5 affixes
+        std::array<int, kMaxAffixes + 1>   countWeights{};       // 0..6 affixes
         std::array<int, kMaxAffixPoints>   tierWeights{};        // tier I..III
     };
 
@@ -189,15 +225,18 @@ namespace roll
         // Bands are interpolated between, so the curve is smooth rather than
         // stepped. Levels must be ascending.
         //
-        // The sixth count weight is the FIFTH AFFIX. It is zero everywhere below
-        // the level-40 band on purpose: interpolation would otherwise leak a
-        // sliver of it into the twenties, and fifthAffixMinLevel below is the
-        // hard floor that makes sure none of that sliver ever lands.
+        // The last two count weights are the FIFTH and SIXTH AFFIX. They are
+        // zero everywhere below the level-40 band on purpose: interpolation
+        // would otherwise leak a sliver of them into the twenties, and the two
+        // floors below are what make sure none of that sliver ever lands.
+        //
+        // The level-40 band's 6 + 2 is the 8 the single fifth-affix weight used
+        // to be, so the share of items with five OR MORE affixes is unchanged.
         std::vector<Curve> bands{
-            { 1, { 55, 30, 12, 3, 0, 0 }, { 80, 18, 2 } },
-            { 12, { 30, 33, 24, 11, 2, 0 }, { 55, 35, 10 } },
-            { 25, { 15, 27, 30, 20, 8, 0 }, { 32, 43, 25 } },
-            { 40, { 6, 16, 28, 26, 16, 8 }, { 18, 40, 42 } },
+            { 1, { 55, 30, 12, 3, 0, 0, 0 }, { 80, 18, 2 } },
+            { 12, { 30, 33, 24, 11, 2, 0, 0 }, { 55, 35, 10 } },
+            { 25, { 15, 27, 30, 20, 8, 0, 0 }, { 32, 43, 25 } },
+            { 40, { 6, 16, 28, 26, 16, 6, 2 }, { 18, 40, 42 } },
         };
 
         // The item level below which a fifth affix cannot roll, whatever the
@@ -209,7 +248,13 @@ namespace roll
         // at 35 reading zero would still let level 36 roll a fraction of the
         // level-40 weight. That is the smooth ramp the curve is for; this is
         // the promise that the ramp starts here and not a level sooner.
-        int fifthAffixMinLevel{ 35 };
+        int fifthAffixMinLevel{ DefaultFifthAffixMinLevel() };
+
+        // The same floor for the sixth affix. A full 3 + 3 item starts here.
+        int sixthAffixMinLevel{ DefaultSixthAffixMinLevel() };
+
+        // What a Vaal Orb may do; from DiabloLoot.ini through SetDefaultVaalRules.
+        VaalRules vaal{ DefaultVaalRules() };
 
         // NPCs roll the same curve as the player (your decision), but the hook
         // is here so an NPC-only ceiling is a one-line change rather than a
@@ -232,6 +277,10 @@ namespace roll
     {
         std::vector<RolledAffix> affixes;
         int                      tier{ 0 };  // sum of points, 0..kMaxTier
+
+        // A Vaal Orb has been used on it: no orb works on it again. Carried in
+        // the save record's flags (Record.h), not in the enchantment.
+        bool                     corrupted{ false };
 
         [[nodiscard]] std::string Name(std::string_view a_baseName) const;
 
@@ -292,11 +341,11 @@ namespace roll
     [[nodiscard]] std::vector<const Affix*> ImplicitPool(const AffixTable& a_table,
         const RollContext& a_ctx);
 
-    // Narrows an explicit pool to what still fits on a_item: drops affixes it
-    // already has, affixes sharing a magic effect with one it has (an implicit
-    // and an explicit of the same effect would merge into one line in the
-    // enchantment and could not be told apart again), and any kind whose cap
-    // the item has reached.
+    // Narrows a pool to what still fits on a_item: drops affixes it already
+    // has, affixes in the same mod group as one it has (which covers two
+    // affixes sharing a magic effect -- an implicit and an explicit of the same
+    // effect would merge into one line in the enchantment and could not be
+    // told apart again), and any kind whose cap the item has reached.
     void FitPool(std::vector<const Affix*>& a_pool, const RolledItem& a_item);
 
     // The tier curve at one item level, interpolated as Roll interpolates it.
@@ -313,12 +362,13 @@ namespace roll
     Draw DrawAffix(std::vector<const Affix*>& a_pool, const RollContext& a_ctx,
         const std::array<int, kMaxAffixPoints>& a_tierWeights, Rng& a_rng, RolledAffix& a_out);
 
-    // 0 white, 1-3 blue, 4-6 yellow, 7-9 purple, 10-12 orange, 13-15 red.
+    // 0 white, 1-3 blue, 4-6 yellow, 7-9 purple, 10-12 orange, 13 and up red.
     //
-    // Red is reachable only with all five affixes on the item -- four at Tier
-    // III stop at twelve -- and five affixes only roll at or above
+    // Red needs at least five affixes on the item -- four at Tier III stop at
+    // twelve -- and a fifth explicit only arrives at or above
     // Tuning::fifthAffixMinLevel. Both gates fall out of the arithmetic rather
     // than being checked here, which is why BandOf still takes just the tier.
+    // (A corrupted item's implicit counts toward the total like any affix.)
     enum class Band
     {
         kWhite,

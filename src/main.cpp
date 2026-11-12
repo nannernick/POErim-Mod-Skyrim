@@ -21,6 +21,8 @@
 #include "Distribute.h"
 #include "Enchanting.h"
 #include "GridTint.h"
+#include "LootApi.h"
+#include "Orbs.h"
 #include "Persist.h"
 #include "Pricing.h"
 #include "QuestReward.h"
@@ -181,6 +183,7 @@ namespace
             Sockets::Connect();
             // The debug pages, if SKSE Menu Framework is there to hold them.
             DebugMenu::Register();
+            LootApi::Broadcast();
             // ★ARPG POV IS A REQUIREMENT, CHECKED AND NOT ENFORCED. This fork is
             // built to be played from ARPG POV's camera -- its labels, outlines
             // and loot filter are how the drops are meant to be read -- so its
@@ -249,6 +252,8 @@ namespace
             // The wielder side of weapon-skill affixes. After ResolveEffects:
             // the sink asks Apply which effects are ours.
             Wielder::Install();
+            Orbs::Init();
+            Orbs::Install();
             break;
 
         // These two exist so the Phase 0 timeline is unambiguous in an appended
@@ -306,6 +311,7 @@ namespace
             // abilities it earned last session did not survive the save. Read
             // the worn weapons back and hand the abilities out again.
             SKSE::GetTaskInterface()->AddTask([]() { Wielder::ReconcileLoaded(); });
+            SKSE::GetTaskInterface()->AddTask([]() { Orbs::Cleanup(); });
             break;
 
         default:

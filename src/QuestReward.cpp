@@ -675,6 +675,9 @@ void QuestReward::Install()
 void QuestReward::SetTable(const roll::AffixTable& a_table)
 {
     g_table = &a_table;
+    // Rebuilt here, after Config::Load, so the affix level gates from
+    // DiabloLoot.ini apply: a namespace-scope Tuning was built at DLL load.
+    g_tuning = roll::Tuning{};
 }
 
 void QuestReward::SetEnabled(bool a_enabled)

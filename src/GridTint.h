@@ -48,6 +48,8 @@
 
 #include <cstdint>
 
+#include "api/GridInventoryAPI.h"
+
 namespace GridTint
 {
     // Registers the ABI listener. Call once, from SKSEPluginLoad.
@@ -79,4 +81,12 @@ namespace GridTint
 
     // Created-object ids are reused by the next save; call where Sockets::Forget is.
     void ForgetTooltipItem();
+
+    // Whether the orb applier table reached Grid Inventory.
+    [[nodiscard]] bool ApplierDelivered();
+
+    // The tooltip lines and palette the grid gets, for DiabloLootAPI.
+    std::uint32_t LinesFor(std::uint32_t a_base, const void* a_xl, GridInvAPI::TooltipLine* a_out,
+        std::uint32_t a_capacity);
+    std::uint32_t PaletteFor(std::uint32_t* a_out, std::uint32_t a_capacity);
 }

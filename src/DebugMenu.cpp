@@ -7,6 +7,8 @@
 #include "DebugMenu.h"
 
 #include "Apply.h"
+#include "Config.h"
+#include "Orbs.h"
 #include "Crafting.h"
 #include "Distribute.h"
 #include "GridTint.h"
@@ -40,7 +42,7 @@ namespace
 {
     using namespace ImGuiMCP;
 
-    constexpr const char* kSection = "POErim Debug Menu";
+    constexpr const char* kSection = "Diablo In Skyrim Debug Menu";
 
     std::atomic<bool> g_available{ false };
 
@@ -802,6 +804,126 @@ namespace
 
     // ---- page: Integration ---------------------------------------------------
 
+    // ---- orbs & drops ----------------------------------------------------------
+
+    std::string g_orbReport;   // under g_lock
+
+    void __stdcall RenderOrbs()
+    {
+        static int  s_orb = 0;
+        static int  s_count = 5;
+        static bool s_confirm = false;
+        static bool s_confirmClean = false;
+        static bool s_loaded = false;
+        static roll::DropTuning s_tuning;
+        static bool s_enabled = true;
+        static int  s_mode = 2;
+        static int  s_cleanup = 3;
+        static bool s_notify = false;
+        if (!s_loaded) {
+            s_tuning = Config::Drops();
+            s_enabled = Config::OrbDropsEnabled();
+            s_mode = static_cast<int>(Config::EnemyGearMode());
+            s_cleanup = Config::OrbCleanupDays();
+            s_notify = Config::OrbDropNotify();
+            s_loaded = true;
+        }
+
+        if (!Orbs::Available()) {
+            TextColored(BandColour(5), "DiabloInSkyrim.esp is not loaded: no orbs exist.");
+        }
+
+        SeparatorText("Spawn orbs");
+        std::array<const char*, roll::kOrbCount> orbNames{};
+        for (int i = 0; i < roll::kOrbCount; ++i) {
+            orbNames[static_cast<std::size_t>(i)] = roll::OrbName(static_cast<roll::Orb>(i));
+        }
+        Combo("Orb##give", &s_orb, orbNames.data(), roll::kOrbCount);
+        SliderInt("How many", &s_count, 1, 100);
+        Checkbox("Yes, change my save##orbs", &s_confirm);
+        BeginDisabled(!s_confirm || !Orbs::Available());
+        if (Button("Put in my inventory")) {
+            s_confirm = false;
+            const auto orb = static_cast<roll::Orb>(std::clamp(s_orb, 0, roll::kOrbCount - 1));
+            const int  count = s_count;
+            RunOnGameThread([orb, count]() { Orbs::Give(orb, count); });
+        }
+        EndDisabled();
+        TextDisabled("Arrives on the next game frame, which is when this menu closes.");
+
+        SeparatorText("Drops (live)");
+        bool changed = false;
+        changed |= Checkbox("Orbs drop from kills", &s_enabled);
+        static constexpr const char* kModes[]{ "ALL_GROUND", "ALL_INVENTORY", "ORBS_GROUND", "ITEMS_INVENTORY" };
+        changed |= Combo("Enemy gear", &s_mode, kModes, 4);
+        changed |= SliderFloat("Global multiplier", &s_tuning.multiplier, 0.0f, 10.0f, "%.2f");
+        changed |= SliderFloat("Chance a kill drops orbs", &s_tuning.chance, 0.0f, 1.0f, "%.2f");
+        changed |= SliderFloat("Base count", &s_tuning.baseCount, 0.0f, 10.0f, "%.2f");
+        changed |= SliderFloat("Count per enemy level", &s_tuning.countPerLevel, 0.0f, 0.5f, "%.3f");
+        changed |= SliderFloat("Most per kill", &s_tuning.maxCount, 0.0f, 20.0f, "%.1f");
+        for (int i = 0; i < roll::kOrbCount; ++i) {
+            const auto label = std::format("Weight: {}", orbNames[static_cast<std::size_t>(i)]);
+            changed |= SliderInt(label.c_str(), &s_tuning.weights[static_cast<std::size_t>(i)], 0, 1000);
+        }
+        changed |= SliderInt("Clean up ground orbs after (days, 0 = never)", &s_cleanup, 0, 30);
+        changed |= Checkbox("Notify on drops", &s_notify);
+        if (changed) {
+            const auto tuning = s_tuning;
+            const bool enabled = s_enabled;
+            const auto mode = static_cast<Config::GearMode>(std::clamp(s_mode, 0, 3));
+            const int  cleanup = s_cleanup;
+            const bool notify = s_notify;
+            RunOnGameThread([tuning, enabled, mode, cleanup, notify]() {
+                Config::Drops() = tuning;
+                Config::SetOrbDropsEnabled(enabled);
+                Config::SetEnemyGearMode(mode);
+                Config::SetOrbCleanupDays(cleanup);
+                Config::SetOrbDropNotify(notify);
+            });
+        }
+        if (Button("Save to DiabloLoot.ini")) {
+            RunOnGameThread([]() {
+                const bool ok = Config::SaveDrops();
+                std::scoped_lock lock{ g_lock };
+                g_orbReport = ok ? "Saved." : "Could not write DiabloLoot.ini.";
+            });
+        }
+        SameLine();
+        if (Button("Reset from the INI")) {
+            s_loaded = false;
+            RunOnGameThread([]() { Config::ResetDrops(); });
+        }
+        SameLine();
+        if (Button("Force the next kill to drop")) {
+            Orbs::ForceNextDrop();
+        }
+        TextDisabled("ALL_GROUND and ITEMS_INVENTORY move enemy gear/gold to the ground; off by default.");
+
+        SeparatorText("This session");
+        const auto stats = Orbs::CurrentStats();
+        Text("Deaths handled %llu, kills that dropped %llu, orbs dropped %llu, orbs used %llu",
+            static_cast<unsigned long long>(stats.deaths), static_cast<unsigned long long>(stats.dropped),
+            static_cast<unsigned long long>(stats.orbs), static_cast<unsigned long long>(stats.used));
+        Text("Ground orb stacks tracked: %zu   Corpses marked: %zu", Persist::GroundOrbCount(),
+            Persist::DroppedCount());
+        Checkbox("Yes, remove every tracked ground orb", &s_confirmClean);
+        BeginDisabled(!s_confirmClean);
+        if (Button("Clean up now")) {
+            s_confirmClean = false;
+            RunOnGameThread([]() {
+                const auto n = Orbs::Cleanup(true);
+                logger::warn("debug menu: REMOVED {} ground orb stack(s) at the player's request", n);
+                std::scoped_lock lock{ g_lock };
+                g_orbReport = std::format("Removed {} ground orb stack(s).", n);
+            });
+        }
+        EndDisabled();
+        std::scoped_lock lock{ g_lock };
+        if (!g_orbReport.empty()) {
+            TextDisabled("%s", g_orbReport.c_str());
+        }
+    }
+
     void StatusLine(const char* a_what, bool a_ok, const char* a_yes, const char* a_no)
     {
         Text("%s:", a_what);
@@ -826,6 +948,11 @@ namespace
         StatusLine("GridInventory.dll", grid, "loaded", "not loaded");
         StatusLine("Host announced its services", GridTint::HostServicesKnown(), "yes", "no");
         StatusLine("Tint table delivered", GridTint::Registered(), "yes", "no");
+        StatusLine("Orb applier delivered", GridTint::ApplierDelivered(), "yes",
+            "no -- orbs can't be used from the grid (needs the POErim Grid Inventory build)");
+        SeparatorText("Orbs");
+        StatusLine("DiabloInSkyrim.esp orbs", Orbs::Available(), "all found",
+            "MISSING -- enable DiabloInSkyrim.esp");
         TextDisabled("Delivered means the message arrived. Whether each table was accepted -- tint,\n"
                      "tooltip, price, sockets -- is in Grid Inventory's own log.");
 
@@ -853,6 +980,7 @@ void DebugMenu::Register()
     SKSEMenuFramework::AddSectionItem("Inspect", RenderInspect);
     SKSEMenuFramework::AddSectionItem("Craft simulator", RenderCraft);
     SKSEMenuFramework::AddSectionItem("Craft on items", RenderForge);
+    SKSEMenuFramework::AddSectionItem("Orbs & drops", RenderOrbs);
     SKSEMenuFramework::AddSectionItem("Co-save", RenderCoSave);
     SKSEMenuFramework::AddSectionItem("Log", RenderLog);
     g_available.store(true);

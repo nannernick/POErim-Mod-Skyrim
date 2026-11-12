@@ -23,6 +23,7 @@
 #include "roll/Record.h"
 
 #include <cstdint>
+#include <utility>
 #include <vector>
 
 namespace Persist
@@ -168,4 +169,21 @@ namespace Persist
     // Forgets everything. Used by the revert callback and available for a
     // console-driven reset while testing.
     void Clear();
+
+    // ---- orb drops (Orbs.cpp) -------------------------------------------------
+    // Records 'ODRP' and 'ORBR' under the same 'DISK' id; kVersion does not move.
+    //
+    // An actor whose death has been turned into orbs, so a corpse is never
+    // rolled twice. Forgotten on TESResetEvent, like the rolled marks.
+    bool MarkDropped(RE::FormID a_actor);
+    [[nodiscard]] bool        WasDropped(RE::FormID a_actor);
+    bool                      ForgetDropped(RE::FormID a_actor);
+    [[nodiscard]] std::size_t DroppedCount();
+
+    // Orb references placed on the ground, with the in-game day they were
+    // placed on, for the cleanup pass.
+    void NoteGroundOrb(RE::FormID a_ref, std::uint32_t a_day);
+    [[nodiscard]] std::vector<std::pair<RE::FormID, std::uint32_t>> GroundOrbs();
+    void                      ForgetGroundOrb(RE::FormID a_ref);
+    [[nodiscard]] std::size_t GroundOrbCount();
 }

@@ -13,10 +13,22 @@
 //
 //  CRAFTING. The orbs are tuned the same way the drops are -- by looking:
 //
-//    RollHarness --craft transmute,augment,exalt,exalt,exalt
-//        Starts every sample as a plain item and uses the orbs in that order.
-//        After each step: how many items the orb worked on, why it failed on
-//        the rest, and the colour-band split of the whole sample.
+//    RollHarness --craft "transmute,augment,exalt*3,chaos*50"
+//        Starts every sample as a plain item and uses the orbs in that order;
+//        orb*N repeats one. After each step: how many items the orb worked on,
+//        why it failed on the rest, and the colour-band split of the whole
+//        sample. (A run of the same orb is printed as one step.)
+//          --level N    one item level instead of the --levels list
+//          --slots X    every sample is this kind of item, e.g. WEAPON|ONEHANDED
+//          --chains N   how many items to run the chain on (same as --samples)
+//          --vaal-keep  Vaal Orbs never destroy the item
+//
+//    RollHarness --drops
+//        Simulates kills at each level and prints what they drop: orbs per
+//        kill, the share of each orb, and how many kills one Divine takes.
+//          --drop-mult X   the global multiplier
+//
+//    --caps P,S         prefix and suffix caps (default 3,3)
 //
 //    RollHarness --chaos-until purple
 //        Rolls an item the way a drop would, then spends Chaos Orbs until it
@@ -30,6 +42,7 @@
 // =============================================================================
 
 #include "roll/Craft.h"
+#include "roll/Drops.h"
 #include "roll/Record.h"
 #include "roll/Roll.h"
 
@@ -49,12 +62,16 @@ namespace
         unsigned         seed{ 20260826 };
         // 34 and 35 straddle the fifth-affix floor, so the default run shows
         // red switching on -- and shows it absent one level below.
-        std::vector<int> levels{ 1, 12, 25, 34, 35, 40 };
+        // 39 and 40 do the same for the sixth affix.
+        std::vector<int> levels{ 1, 12, 25, 34, 35, 39, 40 };
         bool             forNpc{ false };
 
         std::vector<std::string> merges;
         std::vector<roll::Orb>   chain;          // --craft
         int                      chaosTarget{ -1 };  // --chaos-until, as a roll::Band
+        std::uint32_t            slots{ roll::kNone };   // --slots; kNone = the mixed stream
+        bool                     drops{ false };     // --drops
+        float                    dropMult{ 1.0f };   // --drop-mult
     };
 
     std::vector<std::string> SplitCommas(const char* a_text)
@@ -171,6 +188,7 @@ namespace
             roll::RolledItem back;
             bool             same = roll::ToRolled(record, a_table, back) &&
                                     back.tier == a_item.tier &&
+                                    back.corrupted == a_item.corrupted &&
                                     back.affixes.size() == a_item.affixes.size();
             for (std::size_t i = 0; same && i < back.affixes.size(); ++i) {
                 same = back.affixes[i].affix == a_item.affixes[i].affix &&
@@ -215,42 +233,106 @@ namespace
 
             std::vector<roll::RolledItem> items(static_cast<std::size_t>(a_options.samples));
             std::vector<std::uint32_t>    slots(items.size());
+            std::vector<char>             destroyed(items.size(), 0);
             for (auto& mask : slots) {
-                mask = PickSlots(rng);
+                mask = a_options.slots != roll::kNone ? a_options.slots : PickSlots(rng);
             }
 
             std::printf("================ item level %d ================\n", level);
             int step = 0;
-            for (const auto orb : a_options.chain) {
-                std::map<roll::CraftVerdict, int> verdicts;
-                for (std::size_t i = 0; i < items.size(); ++i) {
-                    const roll::RollContext ctx{ level, slots[i], false };
-                    verdicts[roll::Craft(orb, items[i], ctx, a_table, a_tuning, rng)]++;
+            for (std::size_t at = 0; at < a_options.chain.size();) {
+                // A run of the same orb ("chaos*50") is one step: its uses are
+                // added up, and the bands are the sample after the last of them.
+                const auto  orb = a_options.chain[at];
+                std::size_t run = 1;
+                while (at + run < a_options.chain.size() && a_options.chain[at + run] == orb) {
+                    ++run;
+                }
+                at += run;
+
+                std::map<roll::CraftVerdict, long long> verdicts;
+                std::map<roll::CraftEffect, long long>  effects;
+                for (std::size_t use = 0; use < run; ++use) {
+                    for (std::size_t i = 0; i < items.size(); ++i) {
+                        if (destroyed[i]) {
+                            continue;
+                        }
+                        const roll::RollContext ctx{ level, slots[i], false };
+                        roll::CraftEffect       effect = roll::CraftEffect::kNone;
+                        const auto verdict = roll::Craft(orb, items[i], ctx, a_table, a_tuning, rng,
+                            &effect);
+                        verdicts[verdict]++;
+                        if (verdict == roll::CraftVerdict::kOk && effect != roll::CraftEffect::kNone) {
+                            effects[effect]++;
+                        }
+                        if (effect == roll::CraftEffect::kDestroyed) {
+                            destroyed[i] = 1;
+                        }
+                    }
                 }
 
                 std::array<int, roll::kBandCount> bands{};
                 long long                         affixes = 0;
-                for (const auto& item : items) {
+                int                               alive = 0;
+                int                               corrupted = 0;
+                int                               overCap = 0;
+                int                               duplicateGroup = 0;
+                for (std::size_t i = 0; i < items.size(); ++i) {
+                    if (destroyed[i]) {
+                        continue;
+                    }
+                    const auto& item = items[i];
+                    ++alive;
+                    corrupted += item.corrupted ? 1 : 0;
                     bands[static_cast<std::size_t>(roll::BandOf(item.tier))]++;
                     affixes += static_cast<long long>(item.affixes.size());
-                }
-
-                std::printf("  step %d: %s -- worked on %d of %d (%.1f%%)\n", ++step,
-                    roll::OrbName(orb), verdicts[roll::CraftVerdict::kOk], a_options.samples,
-                    100.0 * verdicts[roll::CraftVerdict::kOk] / a_options.samples);
-                for (const auto& [verdict, count] : verdicts) {
-                    if (verdict != roll::CraftVerdict::kOk) {
-                        std::printf("      refused %6d: %s\n", count, roll::Reason(verdict));
+                    // The invariants every orb must keep, checked on every item.
+                    if (item.Count(roll::AffixKind::kPrefix) > roll::MaxPrefixes() ||
+                        item.Count(roll::AffixKind::kSuffix) > roll::MaxSuffixes() ||
+                        item.Count(roll::AffixKind::kImplicit) > roll::kMaxImplicits ||
+                        (item.Explicits() >= 5 && level < a_tuning.fifthAffixMinLevel) ||
+                        (item.Explicits() >= 6 && level < a_tuning.sixthAffixMinLevel)) {
+                        ++overCap;
+                    }
+                    for (std::size_t a = 0; a < item.affixes.size(); ++a) {
+                        for (std::size_t b = a + 1; b < item.affixes.size(); ++b) {
+                            if (item.affixes[a].affix->group == item.affixes[b].affix->group) {
+                                ++duplicateGroup;
+                            }
+                        }
                     }
                 }
-                PrintBands(bands, a_options.samples);
-                std::printf("      mean affixes/item: %.2f\n",
-                    static_cast<double>(affixes) / a_options.samples);
+
+                const long long uses = static_cast<long long>(run) * a_options.samples;
+                std::printf("  step %d: %s%s -- worked %lld of %lld use(s) (%.1f%%)\n", ++step,
+                    roll::OrbName(orb), run > 1 ? (" x" + std::to_string(run)).c_str() : "",
+                    verdicts[roll::CraftVerdict::kOk], uses,
+                    100.0 * static_cast<double>(verdicts[roll::CraftVerdict::kOk]) /
+                        static_cast<double>(uses));
+                for (const auto& [verdict, count] : verdicts) {
+                    if (verdict != roll::CraftVerdict::kOk) {
+                        std::printf("      refused %8lld: %s\n", count, roll::Reason(verdict));
+                    }
+                }
+                for (const auto& [effect, count] : effects) {
+                    std::printf("      outcome %8lld: %s (%.1f%%)\n", count, roll::EffectName(effect),
+                        100.0 * static_cast<double>(count) /
+                            static_cast<double>(verdicts[roll::CraftVerdict::kOk]));
+                }
+                PrintBands(bands, alive);
+                std::printf("      items left: %d of %d, corrupted %d; mean affixes/item: %.2f\n",
+                    alive, a_options.samples, corrupted,
+                    alive > 0 ? static_cast<double>(affixes) / alive : 0.0);
+                std::printf("      rule check: %d item(s) over a cap or a level gate, %d pair(s) "
+                            "sharing a mod group%s\n",
+                    overCap, duplicateGroup, (overCap || duplicateGroup) ? "  <-- BUG" : "");
             }
 
             RecordCheck check;
             for (std::size_t i = 0; i < items.size(); ++i) {
-                check.Add(items[i], level, a_table);
+                if (!destroyed[i]) {
+                    check.Add(items[i], level, a_table);
+                }
             }
             check.Print();
             std::printf("\n");
@@ -282,7 +364,8 @@ namespace
             spent.reserve(static_cast<std::size_t>(a_options.samples));
 
             for (int i = 0; i < a_options.samples; ++i) {
-                const roll::RollContext ctx{ level, PickSlots(rng), false };
+                const roll::RollContext ctx{ level,
+                    a_options.slots != roll::kNone ? a_options.slots : PickSlots(rng), false };
                 auto                    item = roll::Roll(a_table, ctx, a_tuning, rng);
                 if (roll::BandOf(item.tier) >= target) {
                     ++already;
@@ -334,6 +417,64 @@ namespace
     }
 }
 
+namespace
+{
+    void RunDrops(const Options& a_options)
+    {
+        roll::DropTuning tuning;
+        tuning.multiplier = a_options.dropMult;
+
+        std::printf("orb drops: %d kill(s) per level, multiplier x%.2f\n", a_options.samples,
+            tuning.multiplier);
+        std::printf("  chance %.0f%%, count %.2f + %.3f per level (cap %.1f)\n\n",
+            100.0 * tuning.chance, tuning.baseCount, tuning.countPerLevel, tuning.maxCount);
+
+        for (const int level : a_options.levels) {
+            roll::Rng rng{ a_options.seed + static_cast<unsigned>(level) };
+
+            std::array<long long, roll::kOrbCount> counts{};
+            long long                              total = 0;
+            int                                    empty = 0;
+            std::array<int, 9>                     perKill{};   // 0..7, 8+
+            for (int i = 0; i < a_options.samples; ++i) {
+                const auto drop = roll::RollOrbDrop(level, tuning, rng);
+                if (drop.total == 0) {
+                    ++empty;
+                }
+                perKill[static_cast<std::size_t>(std::min(drop.total, 8))]++;
+                total += drop.total;
+                for (int orb = 0; orb < roll::kOrbCount; ++orb) {
+                    counts[static_cast<std::size_t>(orb)] += drop.counts[static_cast<std::size_t>(orb)];
+                }
+            }
+
+            std::printf("================ enemy level %d ================\n", level);
+            std::printf("  orbs per kill: %.2f   kills with none: %.1f%%\n",
+                static_cast<double>(total) / a_options.samples, 100.0 * empty / a_options.samples);
+            std::printf("  per kill:");
+            for (std::size_t n = 0; n < perKill.size(); ++n) {
+                if (perKill[n] > 0) {
+                    std::printf("  %zu%s: %.1f%%", n, n == 8 ? "+" : "",
+                        100.0 * perKill[n] / a_options.samples);
+                }
+            }
+            std::printf("\n");
+            for (int orb = 0; orb < roll::kOrbCount; ++orb) {
+                const long long count = counts[static_cast<std::size_t>(orb)];
+                std::printf("    %-22s %8lld  %5.1f%% of orbs  ", roll::OrbName(static_cast<roll::Orb>(orb)),
+                    count, total > 0 ? 100.0 * static_cast<double>(count) / static_cast<double>(total) : 0.0);
+                if (count > 0) {
+                    std::printf("one per %.1f kill(s)\n", static_cast<double>(a_options.samples) /
+                                                              static_cast<double>(count));
+                } else {
+                    std::printf("never\n");
+                }
+            }
+            std::printf("\n");
+        }
+    }
+}
+
 int main(int argc, char** argv)
 {
     Options options;
@@ -341,6 +482,33 @@ int main(int argc, char** argv)
         const std::string arg = argv[i];
         if (arg == "--samples" && i + 1 < argc) {
             options.samples = std::atoi(argv[++i]);
+        } else if (arg == "--chains" && i + 1 < argc) {
+            options.samples = std::atoi(argv[++i]);
+        } else if (arg == "--level" && i + 1 < argc) {
+            options.levels = { std::atoi(argv[++i]) };
+        } else if (arg == "--slots" && i + 1 < argc) {
+            const char* text = argv[++i];
+            options.slots = roll::ParseSlots(text);
+            if (options.slots == roll::kNone) {
+                std::fprintf(stderr, "unknown slots '%s' (e.g. WEAPON|ONEHANDED, ARMOR|BODY, RING)\n",
+                    text);
+                return 2;
+            }
+        } else if (arg == "--caps" && i + 1 < argc) {
+            const auto caps = ParseLevels(argv[++i]);
+            if (caps.size() != 2) {
+                std::fprintf(stderr, "--caps wants two numbers: prefixes,suffixes\n");
+                return 2;
+            }
+            roll::SetAffixCaps(caps[0], caps[1]);
+        } else if (arg == "--vaal-keep") {
+            auto rules = roll::DefaultVaalRules();
+            rules.canDestroy = false;
+            roll::SetDefaultVaalRules(rules);
+        } else if (arg == "--drops") {
+            options.drops = true;
+        } else if (arg == "--drop-mult" && i + 1 < argc) {
+            options.dropMult = static_cast<float>(std::atof(argv[++i]));
         } else if (arg == "--seed" && i + 1 < argc) {
             options.seed = static_cast<unsigned>(std::atoi(argv[++i]));
         } else if (arg == "--levels" && i + 1 < argc) {
@@ -351,13 +519,21 @@ int main(int argc, char** argv)
             options.merges.emplace_back(argv[++i]);
         } else if (arg == "--craft" && i + 1 < argc) {
             for (const auto& token : SplitCommas(argv[++i])) {
+                // "exalt*3" is three Exalted Orbs.
+                std::string name = token;
+                int         times = 1;
+                if (const auto star = token.find('*'); star != std::string::npos) {
+                    name = token.substr(0, star);
+                    times = std::atoi(token.c_str() + star + 1);
+                }
                 roll::Orb orb{};
-                if (!roll::ParseOrb(token, orb)) {
-                    std::fprintf(stderr, "unknown orb '%s' (transmute, augment, exalt, chaos, scour)\n",
+                if (!roll::ParseOrb(name, orb) || times < 1 || times > 100000) {
+                    std::fprintf(stderr, "unknown orb '%s' (transmute, augment, alchemy, exalt, "
+                                         "chaos, scour, divine, vaal; orb*N repeats)\n",
                         token.c_str());
                     return 2;
                 }
-                options.chain.push_back(orb);
+                options.chain.insert(options.chain.end(), static_cast<std::size_t>(times), orb);
             }
         } else if (arg == "--chaos-until" && i + 1 < argc) {
             const std::string name = argv[++i];
@@ -376,6 +552,13 @@ int main(int argc, char** argv)
         }
     }
 
+    if (options.drops) {
+        RunDrops(options);   // needs no affix table
+        return 0;
+    }
+
+    // Built AFTER the arguments are read: --vaal-keep changes what a default
+    // Tuning starts from.
     roll::AffixTable         table;
     std::vector<std::string> errors;
     if (!table.Load(options.csv, errors)) {
@@ -403,8 +586,11 @@ int main(int argc, char** argv)
             std::printf("    %s\n", error.c_str());
         }
     }
-    std::printf("  rolling %d items per level, seed %u%s\n\n",
-        options.samples, options.seed, options.forNpc ? ", as NPC loot" : "");
+    std::printf("  rolling %d items per level, seed %u%s\n", options.samples, options.seed,
+        options.forNpc ? ", as NPC loot" : "");
+    std::printf("  caps: %d prefixes + %d suffixes; fifth affix from level %d, sixth from %d\n\n",
+        roll::MaxPrefixes(), roll::MaxSuffixes(), roll::DefaultFifthAffixMinLevel(),
+        roll::DefaultSixthAffixMinLevel());
 
     const roll::Tuning tuning;
 
@@ -441,6 +627,9 @@ int main(int argc, char** argv)
                 pick -= slot.share;
             }
 
+            if (options.slots != roll::kNone) {
+                mask = options.slots;
+            }
             const roll::RollContext ctx{ level, mask, options.forNpc };
             const auto              rolled = roll::Roll(table, ctx, tuning, rng);
 

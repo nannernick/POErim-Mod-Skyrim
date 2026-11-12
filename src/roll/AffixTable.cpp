@@ -107,10 +107,57 @@ namespace roll
     {
         int& CapStorage(AffixKind a_kind)
         {
-            static int prefixes = 2;
-            static int suffixes = 2;
+            static int prefixes = 3;
+            static int suffixes = 3;
             return a_kind == AffixKind::kPrefix ? prefixes : suffixes;
         }
+
+        int& GateStorage(bool a_sixth)
+        {
+            static int fifth = 35;
+            static int sixth = 40;
+            return a_sixth ? sixth : fifth;
+        }
+
+        VaalRules& VaalStorage()
+        {
+            static VaalRules rules;
+            return rules;
+        }
+
+        std::string Lower(std::string a_text)
+        {
+            std::transform(a_text.begin(), a_text.end(), a_text.begin(),
+                [](unsigned char a_ch) { return static_cast<char>(std::tolower(a_ch)); });
+            return a_text;
+        }
+    }
+
+    void SetAffixLevelGates(int a_fifthMinLevel, int a_sixthMinLevel) noexcept
+    {
+        GateStorage(false) = std::max(1, a_fifthMinLevel);
+        // The sixth affix can never come before the fifth.
+        GateStorage(true) = std::max(GateStorage(false), a_sixthMinLevel);
+    }
+
+    int DefaultFifthAffixMinLevel() noexcept
+    {
+        return GateStorage(false);
+    }
+
+    int DefaultSixthAffixMinLevel() noexcept
+    {
+        return GateStorage(true);
+    }
+
+    void SetDefaultVaalRules(const VaalRules& a_rules) noexcept
+    {
+        VaalStorage() = a_rules;
+    }
+
+    VaalRules DefaultVaalRules() noexcept
+    {
+        return VaalStorage();
     }
 
     void SetAffixCaps(int a_maxPrefixes, int a_maxSuffixes) noexcept
@@ -216,10 +263,14 @@ namespace roll
     {
 
         // affixId,name,category,tier,points,minValue,maxValue,unit,duration,
-        // area,slots,weight,minItemLevel,mgef,npcExclude,prefix,suffix[,type]
+        // area,slots,weight,minItemLevel,mgef,npcExclude,prefix,suffix[,type[,group]]
         //
         // The eighteenth column, type (prefix / suffix / implicit), is optional:
         // missing or blank, the category decides (KindForCategory).
+        //
+        // The nineteenth, group, is optional too: the mod group, of which an
+        // item carries at most one affix. Missing or blank it is the affixId,
+        // and affixes sharing a magic effect are grouped after the read.
         constexpr std::size_t kColumns = 17;
 
         // Seeded from what is already loaded, so an add-on file can see the base
@@ -354,6 +405,11 @@ namespace roll
                             "using " + KindName(affix.kind));
                     }
                 }
+                affix.group = affix.id;
+                if (fields.size() > 18 && !fields[18].empty()) {
+                    affix.group = fields[18];
+                    affix.groupExplicit = true;
+                }
                 index[affix.id] = _affixes.size();
                 _affixes.push_back(std::move(affix));
                 it = index.find(fields[0]);
@@ -384,6 +440,26 @@ namespace roll
             }
             return false;
         });
+
+        // ★AUTO-GROUPING, redone on every merge because an add-on can bring an
+        // affix that shares an effect with a base one. Every affix without a
+        // group of its own written in the CSV joins the group of the FIRST
+        // affix in the table that uses its magic effect -- that affix's written
+        // group, or its id. Two affixes of one effect on one item would be one
+        // merged line in the enchantment, which is what this rule exists for.
+        std::unordered_map<std::string, std::string> groupOfEffect;
+        for (auto& affix : _affixes) {
+            if (!affix.groupExplicit) {
+                affix.group = affix.id;
+            }
+            if (affix.mgef.empty()) {
+                continue;
+            }
+            const auto [it, first] = groupOfEffect.try_emplace(Lower(affix.mgef), affix.group);
+            if (!first && !affix.groupExplicit) {
+                affix.group = it->second;
+            }
+        }
 
         return !_affixes.empty();
     }

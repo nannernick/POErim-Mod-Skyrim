@@ -79,6 +79,9 @@ add_library(DiabloRoll STATIC
     src/roll/Record.cpp
     src/roll/Craft.h
     src/roll/Craft.cpp
+    # What a kill drops in orbs. Pure so the harness can simulate drop rates.
+    src/roll/Drops.h
+    src/roll/Drops.cpp
 )
 target_compile_features(DiabloRoll PUBLIC cxx_std_23)
 target_compile_options(DiabloRoll PRIVATE /utf-8)
@@ -154,6 +157,13 @@ list(APPEND SOURCES src/Crafting.h src/Crafting.cpp)
 # at run time, so the framework is optional and nothing links against it.
 list(APPEND SOURCES src/Version.h)
 list(APPEND SOURCES src/DebugMenu.h src/DebugMenu.cpp)
+
+# Orbs: the currency items in DiabloInSkyrim.esp, kill drops, and using one on
+# an item (through Grid Inventory's Applier table, see GridTint.cpp).
+list(APPEND SOURCES src/Orbs.h src/Orbs.cpp)
+
+# DiabloLootAPI: bands, currency and hover lines for a loot-label mod.
+list(APPEND SOURCES src/api/DiabloLootAPI.h src/LootApi.h src/LootApi.cpp)
 
 add_library(${PROJECT_NAME} SHARED ${SOURCES})
 

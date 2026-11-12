@@ -387,16 +387,48 @@ Crafting::Outcome Crafting::ApplyOrb(const Target& a_target, roll::Orb a_orb)
     // The roller's shipped curve: what every roll site is constructed with.
     const roll::Tuning tuning;
     auto               rolled = subject.rolled;
-    const auto verdict = roll::Craft(a_orb, rolled, subject.ctx, *Records::Table(), tuning, Rng());
+    roll::CraftEffect  effect = roll::CraftEffect::kNone;
+    const auto verdict = roll::Craft(a_orb, rolled, subject.ctx, *Records::Table(), tuning, Rng(),
+        &effect);
     if (verdict != roll::CraftVerdict::kOk) {
         logger::info("craft[{:08X}]: {} refused -- {}", a_target.base, roll::OrbName(a_orb),
             roll::Reason(verdict));
         return Refused(roll::Reason(verdict));
     }
 
+    if (effect == roll::CraftEffect::kDestroyed) {
+        // ★A VAAL ORB'S WORST OUTCOME: the item is gone. Taken off first if
+        // worn, removed with its own list, and its enchantment released (the
+        // release keeps it while anything else still holds it).
+        auto* object = subject.unit.object;
+        auto* xList = subject.unit.xList;
+        RE::EnchantmentItem* ench = nullptr;
+        if (xList) {
+            if (const auto* xEnch = xList->GetByType<RE::ExtraEnchantment>()) {
+                ench = xEnch->enchantment;
+            }
+        }
+        if (subject.unit.worn) {
+            Unequip(subject.player, subject.unit);
+        }
+        subject.player->RemoveItem(object, 1, RE::ITEM_REMOVE_REASON::kRemove, xList, nullptr);
+        if (ench && subject.hadOurs) {
+            Apply::ReleaseCreated(ench, IsWeapon(object));
+        }
+        Finish(subject.player);
+        logger::info("craft[{:08X}]: {} DESTROYED the item", a_target.base, roll::OrbName(a_orb));
+        Crafting::Outcome gone;
+        gone.ok = true;
+        gone.message = "The Vaal Orb destroyed the item";
+        return gone;
+    }
+
     auto outcome = Rebuild(subject.player, subject.unit, subject.hadOurs, rolled,
         subject.ctx.itemLevel, static_cast<std::uint8_t>(subject.flags | roll::kRecordCrafted));
     Finish(subject.player);
+    if (outcome.ok && effect != roll::CraftEffect::kNone) {
+        outcome.message = std::format("{} -- corrupted, {}", outcome.message, roll::EffectName(effect));
+    }
 
     logger::info("craft[{:08X}]: {} at item level {} -- {} -> {} affix(es), {} point(s), {}{}",
         a_target.base, roll::OrbName(a_orb), subject.ctx.itemLevel, subject.rolled.affixes.size(),

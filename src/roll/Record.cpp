@@ -38,6 +38,9 @@ namespace roll
         ItemRecord record;
         record.itemLevel = static_cast<std::uint16_t>(std::clamp(a_itemLevel, 1, 65535));
         record.flags = a_flags;
+        if (a_rolled.corrupted) {
+            record.flags = static_cast<std::uint8_t>(record.flags | kRecordCorrupted);
+        }
         record.affixes.reserve(a_rolled.affixes.size());
         for (const auto& rolled : a_rolled.affixes) {
             if (!rolled.affix) {
@@ -55,6 +58,7 @@ namespace roll
     bool ToRolled(const ItemRecord& a_record, const AffixTable& a_table, RolledItem& a_out)
     {
         a_out = RolledItem{};
+        a_out.corrupted = (a_record.flags & kRecordCorrupted) != 0;
         a_out.affixes.reserve(a_record.affixes.size());
 
         bool complete = true;
