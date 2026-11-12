@@ -59,6 +59,7 @@ jobs:
           Copy-Item build/Release/RollHarness.exe dist-tools
           Copy-Item build/Release/DiabloInSkyrim.pdb dist-tools -ErrorAction SilentlyContinue
           Copy-Item data/DiabloLoot_affixes.csv dist-tools
+          Copy-Item data/DiabloLoot_affixes_implicits.csv $plugins
 
       - name: Upload mod (Vortex-installable)
         uses: actions/upload-artifact@v4
