@@ -1,21 +1,25 @@
 // =============================================================================
 //  Crafting orbs -- changing an item that already exists. Pure, like the roller.
 // =============================================================================
-//  Path of Exile's currency, on this mod's own model. An orb does not have a
-//  rarity to change: an item here is 0-5 affixes worth 1-3 points each and its
-//  colour is the point sum, so every rule below is written in terms of HOW MANY
-//  AFFIXES the item has, and the band simply falls out afterwards.
+//  Path of Exile's currency, on this mod's own model. An item is up to
+//  MaxPrefixes() prefixes and MaxSuffixes() suffixes -- its EXPLICIT affixes --
+//  plus, at item level 35 and up, one IMPLICIT in the last slot (Roll.h). Each
+//  affix is worth 1-3 points and the colour is the point sum, so every rule
+//  below is written in terms of the explicit count and the band falls out.
 //
-//      Transmutation   0 affixes        -> 1
-//      Augmentation    exactly 1        -> 2
-//      Exalted         2 to 4           -> one more (the fifth is level-gated)
-//      Chaos           2 or more        -> all rerolled, same count
-//      Scouring        1 or more        -> none: back to the plain base
+//      Transmutation   a plain item           -> 1 explicit
+//      Augmentation    exactly 1 explicit     -> 2
+//      Exalted         2 or 3 explicits       -> one more, on a side with room
+//                      a full 2 + 2           -> the implicit (needs level 35)
+//      Chaos           2 or more explicits    -> explicits rerolled, same count;
+//                                                the implicit is kept
+//      Scouring        anything               -> nothing: back to the plain base
 //
 //  A new affix is drawn by the SAME function a fresh roll uses (DrawAffix in
 //  Roll.h): the item's slots, its stored item level, the affix weights and the
-//  tier curve all apply, and an affix the item already carries is taken out of
-//  the pool first. There is no second affix system here.
+//  tier curve all apply, and FitPool removes what the item already has, what
+//  shares an effect with it, and any kind that is full. There is no second
+//  affix system here.
 //
 //  NOTHING HERE TOUCHES THE GAME. The plugin turns the result into a new
 //  enchantment; the harness runs the same code a million times and prints what
@@ -49,12 +53,12 @@ namespace roll
         kOk,
         kNotAffixable,      // the item presents no slot the table knows
         kNeedsNoAffixes,    // Transmutation on an item that already has some
-        kNeedsOneAffix,     // Augmentation on an item without exactly one
-        kNeedsTwoToFour,    // Exalted on an item with fewer than two
-        kNeedsTwoOrMore,    // Chaos on an item with fewer than two
+        kNeedsOneAffix,     // Augmentation on an item without exactly one explicit
+        kNeedsTwoToFour,    // Exalted on an item with fewer than two explicits
+        kNeedsTwoOrMore,    // Chaos on an item with fewer than two explicits
         kNothingToRemove,   // Scouring on a plain item
-        kFull,              // already at kMaxAffixes
-        kFifthLocked,       // a fifth affix needs Tuning::fifthAffixMinLevel
+        kFull,              // every slot, the implicit included, is taken
+        kFifthLocked,       // the implicit slot needs Tuning::fifthAffixMinLevel
         kNoEligibleAffix,   // nothing left in the pool for this item
     };
 

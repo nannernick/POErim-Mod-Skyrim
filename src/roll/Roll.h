@@ -92,6 +92,35 @@ namespace roll
         int           minItemLevel{ 0 };
     };
 
+    // ---------------------------------------------------------- affix kinds
+    //
+    // Path of Exile's split, on this mod's points model. An item carries up to
+    // MaxPrefixes() prefixes and MaxSuffixes() suffixes -- its EXPLICIT affixes,
+    // the ones the orbs work on -- and the last affix slot is an IMPLICIT: one
+    // stronger affix tied to the kind of item (a ring's resistance, a weapon's
+    // elemental damage), which only items at Tuning::fifthAffixMinLevel can
+    // carry. Two plus two plus one is the five the band arithmetic was built
+    // around, so red still needs a full item and still starts at 35.
+    //
+    // The kind is the CSV's eighteenth column. A table without it -- an add-on
+    // written before the column existed -- gets one from the affix's category
+    // (KindForCategory), so nothing has to be edited for it to keep loading.
+    enum class AffixKind : std::uint8_t
+    {
+        kPrefix,
+        kSuffix,
+        kImplicit,
+    };
+
+    [[nodiscard]] const char* KindName(AffixKind a_kind) noexcept;   // "prefix"
+    [[nodiscard]] AffixKind   KindForCategory(std::string_view a_category) noexcept;
+
+    // The explicit caps. Process-wide, like the name marker, because every roll
+    // site and every orb must agree on them; set once from DiabloLoot.ini.
+    void SetAffixCaps(int a_maxPrefixes, int a_maxSuffixes) noexcept;
+    [[nodiscard]] int MaxPrefixes() noexcept;
+    [[nodiscard]] int MaxSuffixes() noexcept;
+
     struct Affix
     {
         std::string            id;
@@ -103,7 +132,10 @@ namespace roll
         std::string            suffix;
         std::uint32_t          slots{ kNone };
         bool                   npcExclude{ false };
+        AffixKind              kind{ AffixKind::kSuffix };
         std::vector<AffixTier> tiers;
+
+        [[nodiscard]] bool Implicit() const noexcept { return kind == AffixKind::kImplicit; }
     };
 
     // ------------------------------------------------------------- the table
@@ -202,6 +234,14 @@ namespace roll
         int                      tier{ 0 };  // sum of points, 0..kMaxTier
 
         [[nodiscard]] std::string Name(std::string_view a_baseName) const;
+
+        // How many of each kind the item carries.
+        [[nodiscard]] int Count(AffixKind a_kind) const noexcept;
+        [[nodiscard]] int Explicits() const noexcept
+        {
+            return Count(AffixKind::kPrefix) + Count(AffixKind::kSuffix);
+        }
+        [[nodiscard]] bool HasImplicit() const noexcept { return Count(AffixKind::kImplicit) > 0; }
     };
 
     struct RollContext
@@ -244,8 +284,20 @@ namespace roll
     // The pool is every affix this item could carry at its level. A caller
     // adding to an item removes what the item already has before drawing --
     // that is the "no duplicate affix" rule.
+    // EXPLICIT affixes only. The implicit has a pool of its own.
     [[nodiscard]] std::vector<const Affix*> EligiblePool(const AffixTable& a_table,
         const RollContext& a_ctx);
+
+    // The implicits this item could carry at its level and slot.
+    [[nodiscard]] std::vector<const Affix*> ImplicitPool(const AffixTable& a_table,
+        const RollContext& a_ctx);
+
+    // Narrows an explicit pool to what still fits on a_item: drops affixes it
+    // already has, affixes sharing a magic effect with one it has (an implicit
+    // and an explicit of the same effect would merge into one line in the
+    // enchantment and could not be told apart again), and any kind whose cap
+    // the item has reached.
+    void FitPool(std::vector<const Affix*>& a_pool, const RolledItem& a_item);
 
     // The tier curve at one item level, interpolated as Roll interpolates it.
     [[nodiscard]] std::array<int, kMaxAffixPoints> TierWeightsFor(const Tuning& a_tuning,

@@ -60,6 +60,9 @@ namespace
         Rgba(255, 140, 60),    // 4  orange   tiers 10-12
         Rgba(230, 60, 70),     // 5  red      tiers 13-15
     };
+    // The detail view's headings: a quiet grey, so the affixes stay the loud part.
+    constexpr std::uint32_t kHeadingColour = Rgba(150, 150, 150);
+
     static_assert(std::size(kPalette) <= GridInvAPI::kMaxTintTier,
                   "the ABI cannot carry this many bands");
     static_assert(std::size(kPalette) == static_cast<std::size_t>(roll::kBandCount) - 1,
@@ -248,13 +251,51 @@ namespace
             // render thread, and all it needs is whether one key is down now.
             const int  key = Config::TooltipDetailKey();
             const bool detail = key > 0 && (::GetAsyncKeyState(key) & 0x8000) != 0;
-            for (const auto& rolled : view.rolled.affixes) {
-                if (n >= a_capacity) {
-                    break;
+
+            // ★PATH OF EXILE'S LAYOUT. The implicit sits on its own above a
+            // rule -- it belongs to the base -- and the explicits follow,
+            // prefixes before suffixes. Holding the detail key adds what PoE's
+            // Alt adds: a heading per kind with how full it is, and each
+            // affix's tier and roll range.
+            const auto section = [&](roll::AffixKind a_kind, const char* a_heading, int a_cap,
+                                     bool& a_ruleNext) {
+                int have = 0;
+                for (const auto& rolled : view.rolled.affixes) {
+                    if (rolled.affix && rolled.affix->kind == a_kind) {
+                        ++have;
+                    }
                 }
-                PutLine(a_out[n], AffixLine(rolled, detail), colour);
-                ++n;
+                if (have == 0 && !detail) {
+                    return;
+                }
+                if (detail && n < a_capacity) {
+                    const std::string heading = a_cap > 0 ? std::format("{} ({}/{})", a_heading, have, a_cap)
+                                                          : std::string{ a_heading };
+                    PutLine(a_out[n], heading, kHeadingColour, 0, a_ruleNext);
+                    ++n;
+                    a_ruleNext = false;
+                }
+                for (const auto& rolled : view.rolled.affixes) {
+                    if (n >= a_capacity) {
+                        return;
+                    }
+                    if (!rolled.affix || rolled.affix->kind != a_kind) {
+                        continue;
+                    }
+                    PutLine(a_out[n], AffixLine(rolled, detail), colour,
+                        detail ? std::uint8_t{ 1 } : std::uint8_t{ 0 }, a_ruleNext);
+                    ++n;
+                    a_ruleNext = false;
+                }
+            };
+
+            bool rule = false;
+            if (view.rolled.HasImplicit()) {
+                section(roll::AffixKind::kImplicit, "Implicit", 0, rule);
+                rule = true;   // the rule PoE draws under the implicit
             }
+            section(roll::AffixKind::kPrefix, "Prefixes", roll::MaxPrefixes(), rule);
+            section(roll::AffixKind::kSuffix, "Suffixes", roll::MaxSuffixes(), rule);
         }
         return n;
     }

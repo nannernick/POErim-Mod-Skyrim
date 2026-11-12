@@ -55,6 +55,11 @@ namespace
             const roll::Affix*     found = nullptr;
             const roll::AffixTier* foundTier = nullptr;
             for (const auto& affix : a_table.Affixes()) {
+                // An item old enough to need this predates implicits, so an
+                // implicit row is never what one of its effects came from.
+                if (affix.Implicit()) {
+                    continue;
+                }
                 if (Apply::EffectFor(affix.id) != effect->baseEffect) {
                     continue;
                 }

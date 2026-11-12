@@ -63,6 +63,11 @@ namespace
     bool g_tooltipItemLevel = true;
     bool g_tooltipAffixLines = true;
     int  g_tooltipDetailKey = 0x12;
+
+    // How many prefixes and suffixes an item may carry. Read into the roller
+    // (roll::SetAffixCaps) with the other settings.
+    int g_maxPrefixes = 2;
+    int g_maxSuffixes = 2;
     bool  g_vendorStock = true;
     bool  g_priceHook = true;
     bool  g_sellPricesScaled = false;
@@ -207,6 +212,10 @@ void Config::Load()
             g_weaponChargeCostPerPoint = static_cast<int>(AsFloat(value, 2.0f, 0.0f, 1000.0f));
         } else if (key == "wielderbuffs") {
             g_wielderBuffs = AsBool(value);
+        } else if (key == "maxprefixes") {
+            g_maxPrefixes = static_cast<int>(AsFloat(value, 2.0f, 0.0f, 5.0f));
+        } else if (key == "maxsuffixes") {
+            g_maxSuffixes = static_cast<int>(AsFloat(value, 2.0f, 0.0f, 5.0f));
         } else if (key == "tooltipitemlevel") {
             g_tooltipItemLevel = AsBool(value);
         } else if (key == "tooltipaffixlines") {
@@ -251,6 +260,7 @@ void Config::Load()
 
     roll::SetTierMark(g_tierMarker);
     roll::SetTierMarkInName(g_tierMarkerInName);
+    roll::SetAffixCaps(g_maxPrefixes, g_maxSuffixes);
 
     logger::info(
         "{}: {} setting(s) applied -- distribution {}, quest rewards {}, discovery {}, "

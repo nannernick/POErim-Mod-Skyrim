@@ -230,31 +230,39 @@ namespace roll
         // item comes out as "Honed Iron Sword of Wielding", where both halves are
         // the same affix talking about itself twice.
         //
-        // The shape follows Skyrim first and Diablo second: with one affix you
-        // get "Iron Sword of Burning", exactly as vanilla names its own gear. A
-        // prefix only appears once a SECOND affix is there to earn it, so the
-        // name grows with the item rather than being uniformly ornate.
+        // ★WITH KINDS, PATH OF EXILE'S RULE: a prefix affix names the front, a
+        // suffix affix the back, the stronger of each kind speaking. The
+        // implicit never names the item -- it belongs to the base, not to the
+        // roll. A table whose kind leaves one side empty falls back to the old
+        // rule for that side, so a name never comes out with a fragment missing
+        // that an affix on the item could have supplied.
         const RolledAffix* forSuffix = nullptr;
         const RolledAffix* forPrefix = nullptr;
 
-        for (const auto& rolled : affixes) {
-            if (!rolled.affix) {
-                continue;
+        const auto strongest = [&](AffixKind a_kind, bool a_wantSuffix, const RolledAffix* a_skip) {
+            const RolledAffix* best = nullptr;
+            for (const auto& rolled : affixes) {
+                if (!rolled.affix || &rolled == a_skip || rolled.affix->Implicit()) {
+                    continue;
+                }
+                if (rolled.affix->kind != a_kind) {
+                    continue;
+                }
+                const auto& fragment = a_wantSuffix ? rolled.affix->suffix : rolled.affix->prefix;
+                if (!fragment.empty() && (!best || rolled.points > best->points)) {
+                    best = &rolled;
+                }
             }
-            if (!rolled.affix->suffix.empty() &&
-                (!forSuffix || rolled.points > forSuffix->points)) {
-                forSuffix = &rolled;
-            }
-        }
+            return best;
+        };
 
-        for (const auto& rolled : affixes) {
-            if (!rolled.affix || &rolled == forSuffix) {
-                continue;  // already spoke
-            }
-            if (!rolled.affix->prefix.empty() &&
-                (!forPrefix || rolled.points > forPrefix->points)) {
-                forPrefix = &rolled;
-            }
+        forSuffix = strongest(AffixKind::kSuffix, true, nullptr);
+        forPrefix = strongest(AffixKind::kPrefix, false, nullptr);
+        if (!forSuffix) {
+            forSuffix = strongest(AffixKind::kPrefix, true, forPrefix);
+        }
+        if (!forPrefix) {
+            forPrefix = strongest(AffixKind::kSuffix, false, forSuffix);
         }
 
         std::string out;
@@ -302,6 +310,9 @@ namespace roll
     {
         std::vector<const Affix*> pool;
         for (const auto& affix : a_table.Affixes()) {
+            if (affix.Implicit()) {
+                continue;
+            }
             if ((affix.slots & a_ctx.itemSlots) == 0) {
                 continue;
             }
@@ -315,6 +326,52 @@ namespace roll
             }
         }
         return pool;
+    }
+
+    std::vector<const Affix*> ImplicitPool(const AffixTable& a_table, const RollContext& a_ctx)
+    {
+        std::vector<const Affix*> pool;
+        for (const auto& affix : a_table.Affixes()) {
+            if (!affix.Implicit() || (affix.slots & a_ctx.itemSlots) == 0) {
+                continue;
+            }
+            const bool anyUnlocked = std::any_of(affix.tiers.begin(), affix.tiers.end(),
+                [&](const AffixTier& a_tier) { return a_ctx.itemLevel >= a_tier.minItemLevel; });
+            if (anyUnlocked) {
+                pool.push_back(&affix);
+            }
+        }
+        return pool;
+    }
+
+    void FitPool(std::vector<const Affix*>& a_pool, const RolledItem& a_item)
+    {
+        const bool prefixesFull = a_item.Count(AffixKind::kPrefix) >= MaxPrefixes();
+        const bool suffixesFull = a_item.Count(AffixKind::kSuffix) >= MaxSuffixes();
+        std::erase_if(a_pool, [&](const Affix* a_candidate) {
+            if (a_candidate->kind == AffixKind::kPrefix && prefixesFull) {
+                return true;
+            }
+            if (a_candidate->kind == AffixKind::kSuffix && suffixesFull) {
+                return true;
+            }
+            return std::any_of(a_item.affixes.begin(), a_item.affixes.end(),
+                [&](const RolledAffix& a_have) {
+                    return a_have.affix == a_candidate ||
+                           (!a_have.affix->mgef.empty() && a_have.affix->mgef == a_candidate->mgef);
+                });
+        });
+    }
+
+    int RolledItem::Count(AffixKind a_kind) const noexcept
+    {
+        int count = 0;
+        for (const auto& rolled : affixes) {
+            if (rolled.affix && rolled.affix->kind == a_kind) {
+                ++count;
+            }
+        }
+        return count;
     }
 
     Draw DrawAffix(std::vector<const Affix*>& a_pool, const RollContext& a_ctx,
@@ -434,14 +491,42 @@ namespace roll
         // The pool and the draw are functions of their own (below) because a
         // crafting orb adds an affix to an item by exactly the same rules a
         // fresh roll does -- see Craft.cpp. One implementation, two callers.
-        auto pool = EligiblePool(a_table, a_ctx);
-        if (pool.empty()) {
-            return result;
-        }
+        // ★THE LAST SLOT IS THE IMPLICIT. The count curve still says how many
+        // affixes the item gets, 0 to 5; the first four are explicit, capped at
+        // MaxPrefixes / MaxSuffixes, and a fifth is the implicit. The curve's
+        // fifth-affix weight is already zero below fifthAffixMinLevel (above),
+        // so the implicit inherits the promise that red starts at 35 without a
+        // gate of its own. Drawn FIRST, so the explicits can avoid its effect.
+        const int explicitCap = MaxPrefixes() + MaxSuffixes();
+        const int explicitWanted = std::min(wanted, explicitCap);
+        const bool implicitWanted = wanted > explicitCap;
 
         result.affixes.reserve(static_cast<std::size_t>(wanted));
 
-        for (int picked = 0; picked < wanted && !pool.empty(); ++picked) {
+        if (implicitWanted) {
+            auto        implicits = ImplicitPool(a_table, a_ctx);
+            RolledAffix rolled;
+            while (!implicits.empty()) {
+                const auto drawn = DrawAffix(implicits, a_ctx, tierWeights, a_rng, rolled);
+                if (drawn == Draw::kDrawn) {
+                    result.tier += rolled.points;
+                    result.affixes.push_back(rolled);
+                    break;
+                }
+                if (drawn == Draw::kExhausted) {
+                    break;
+                }
+            }
+        }
+
+        // The pool and the draw are functions of their own (below) because a
+        // crafting orb adds an affix to an item by exactly the same rules a
+        // fresh roll does -- see Craft.cpp. One implementation, two callers.
+        auto pool = EligiblePool(a_table, a_ctx);
+        FitPool(pool, result);
+
+        int explicits = 0;
+        while (explicits < explicitWanted && !pool.empty()) {
             RolledAffix rolled;
             const auto  drawn = DrawAffix(pool, a_ctx, tierWeights, a_rng, rolled);
             if (drawn == Draw::kExhausted) {
@@ -452,6 +537,9 @@ namespace roll
             }
             result.tier += rolled.points;
             result.affixes.push_back(rolled);
+            ++explicits;
+            // A kind that just reached its cap leaves the pool.
+            FitPool(pool, result);
         }
 
         if (a_ctx.forNpc && result.tier > a_tuning.npcMaxTier) {

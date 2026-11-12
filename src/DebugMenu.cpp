@@ -154,7 +154,10 @@ namespace
         Text("Item level: %u%s", static_cast<unsigned>(view.record.itemLevel),
             (view.record.flags & roll::kRecordLegacy) ? "  (estimated: rebuilt from the enchantment)" : "");
         Text("Base form: %08X   Created enchantment: %08X", a_item.base, view.enchantment);
-        Text("Slots: %s", roll::SlotsToString(a_item.slots).c_str());
+        Text("Slots: %s   Prefixes %d/%d  Suffixes %d/%d  Implicit %s",
+            roll::SlotsToString(a_item.slots).c_str(), view.rolled.Count(roll::AffixKind::kPrefix),
+            roll::MaxPrefixes(), view.rolled.Count(roll::AffixKind::kSuffix), roll::MaxSuffixes(),
+            view.rolled.HasImplicit() ? "yes" : "no");
         Text("Co-save: band %s, ours %s, record %s%s",
             Persist::EnchTier(view.enchantment) ? "yes" : "no",
             Persist::IsAffixEnch(view.enchantment) ? "yes" : "no",
@@ -173,9 +176,9 @@ namespace
             }
             const auto* tier = affix ? roll::FindTier(*affix, entry.tier) : nullptr;
             if (affix && tier) {
-                BulletText("%s  tier %d (%d pt)  value %.2f  range %.2f to %.2f  [%s]",
-                    affix->name.c_str(), tier->tier, tier->points, entry.value, tier->minValue,
-                    tier->maxValue, entry.id.c_str());
+                BulletText("%s %s  tier %d (%d pt)  value %.2f  range %.2f to %.2f  [%s]",
+                    roll::KindName(affix->kind), affix->name.c_str(), tier->tier, tier->points,
+                    entry.value, tier->minValue, tier->maxValue, entry.id.c_str());
             } else {
                 BulletText("%s  tier %u  value %.2f  (not in the table)", entry.id.c_str(),
                     static_cast<unsigned>(entry.tier), entry.value);

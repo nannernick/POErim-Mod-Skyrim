@@ -13,7 +13,8 @@ POErim is a fork of **Diablo In Skyrim (DiabloRim)** by tangwesley. All of the l
 | Affix loot on NPC gear, containers, vendors, quest rewards | Working (from Diablo In Skyrim) |
 | Per-item affix records in the co-save | **New in 1.1.0** |
 | Old items get their record rebuilt from their enchantment | **New in 1.1.0** |
-| Tooltips: item level, affix lines, tier and roll range on Alt | **New in 1.1.0** (needs a Grid Inventory build with the tooltip slot) |
+| Prefixes, suffixes and an implicit slot (PoE layout) | **New in 1.1.0** |
+| Tooltips: item level and affix lines; Alt shows Implicit / Prefixes / Suffixes with tier and roll range | **New in 1.1.0** |
 | Debug menu in SKSE Menu Framework | **New in 1.1.0** |
 | Crafting rules for the five orbs, in the offline harness and the in-game simulator | **New in 1.1.0** |
 | Using orbs on real items, orb items, orb drops, ARPG POV labels for orbs | Not yet: next builds |
@@ -31,23 +32,26 @@ POErim is a fork of **Diablo In Skyrim (DiabloRim)** by tangwesley. All of the l
 | Orange | 10-12 |
 | Red | 13-15 |
 
-A fifth affix, and so red, only rolls on items of level 35 or higher. NPC gear rolls at the NPC's level; container and quest loot at yours. Vanilla-enchanted items, uniques and quest items are left alone.
+Affixes follow Path of Exile's layout: up to **2 prefixes** and **2 suffixes** (the explicit affixes crafting works on), plus an **implicit** in the last slot. The implicit is one stronger affix tied to the kind of item (elemental damage on weapons, resistances on rings, life and armour on body armour, and so on: `DiabloLoot_affixes_implicits.csv`), and only rolls on items of level 35 or higher. Red needs all five slots, so red still starts at 35.
+
+Prefixes are damage, leech, attributes, armour and unarmed damage; everything else is a suffix. Each affix's kind comes from its category, or from an optional last `type` column in the CSV. NPC gear rolls at the NPC's level; container and quest loot at yours. Vanilla-enchanted items, uniques and quest items are left alone.
 
 **Item records.** Every rolled item now keeps what it rolled: affix ids, tiers, values and the item level. Items from a save made before 1.1.0 have that read back out of their enchantment the first time you hover them; the affixes are exact and the item level is an estimate (shown as "estimated").
 
-**Tooltips** (Grid Inventory). Under the item's name: its item level and one line per affix in the item's colour. Hold **Alt** to add each affix's tier and the range that tier can roll.
+**Tooltips** (Grid Inventory). Under the item's name: its item level, the implicit above a rule, then the prefixes and suffixes in the item's colour. Hold **Alt** to split them under Implicit / Prefixes (n/2) / Suffixes (n/2) headings and add each affix's tier and the range that tier can roll.
 
 **Crafting orbs** (rules only in this build):
 
 | Orb | Works on | Does |
 |---|---|---|
-| Orb of Transmutation | 0 affixes | adds 1 |
-| Orb of Augmentation | exactly 1 affix | adds 1 |
-| Exalted Orb | 2 to 4 affixes | adds 1 (a fifth needs item level 35) |
-| Chaos Orb | 2 or more affixes | rerolls all, keeps the count |
-| Orb of Scouring | 1 or more affixes | removes all |
+| Orb of Transmutation | a plain item | adds 1 prefix or suffix |
+| Orb of Augmentation | exactly 1 prefix or suffix | adds 1 |
+| Exalted Orb | 2 or 3 prefixes/suffixes | adds 1 on a side with room |
+| Exalted Orb | full 2 + 2 | adds the implicit (needs item level 35) |
+| Chaos Orb | 2 or more prefixes/suffixes | rerolls them, keeps the count and the implicit |
+| Orb of Scouring | anything | removes everything, implicit included |
 
-New affixes are drawn by the same rules as a drop: the item's slots, its stored item level, no affix twice. The colour is recalculated from the points, so it can change. An orb that cannot be used does nothing and is not spent.
+New affixes are drawn by the same rules as a drop: the item's slots, its stored item level, the prefix/suffix caps, no affix twice and no two affixes with the same effect. The colour is recalculated from the points, so it can change. An orb that cannot be used does nothing and is not spent.
 
 ## Requirements
 
@@ -67,7 +71,7 @@ New affixes are drawn by the same rules as a drop: the item's slots, its stored 
 3. In Vortex: *Install From File*, pick the zip, enable it.
 4. Optional: install `POErim-Summermyst-Affixes` the same way if you use Summermyst.
 
-The zip contains `SKSE/Plugins/DiabloInSkyrim.dll`, `DiabloLoot.ini` and `DiabloLoot_affixes.csv`. Updating overwrites `DiabloLoot.ini`; keep a copy if you have edited it.
+The zip contains `SKSE/Plugins/DiabloInSkyrim.dll`, `DiabloLoot.ini`, `DiabloLoot_affixes.csv` and `DiabloLoot_affixes_implicits.csv`. Updating overwrites `DiabloLoot.ini`; keep a copy if you have edited it.
 
 ## Configuration
 
@@ -75,11 +79,13 @@ Player settings are in `Data/SKSE/Plugins/DiabloLoot.ini`. Every setting is opti
 
 | Setting | Default | |
 |---|---|---|
+| `MaxPrefixes` | 2 | Prefixes an item can carry |
+| `MaxSuffixes` | 2 | Suffixes an item can carry |
 | `TooltipItemLevel` | 1 | Show the item level on the tooltip |
 | `TooltipAffixLines` | 1 | Show one line per affix. Set to 0 if your grid already lists the same effects |
-| `TooltipDetailKey` | 18 (Alt) | Hold to show tier and roll range. A Windows virtual-key code; 0 turns it off |
+| `TooltipDetailKey` | 18 (Alt) | Hold to show the Implicit / Prefixes / Suffixes headings, tiers and roll ranges. A Windows virtual-key code; 0 turns it off |
 
-Loot balance is in `DiabloLoot_affixes.csv`. Any file named `DiabloLoot_affixes_*.csv` beside it is merged on top.
+Loot balance is in `DiabloLoot_affixes.csv`, implicits in `DiabloLoot_affixes_implicits.csv`. Any file named `DiabloLoot_affixes_*.csv` beside it is merged on top. Summermyst's affixes have no category the mod recognises, so they all count as suffixes unless you add a `type` column.
 
 ## Debug menu
 
@@ -88,7 +94,7 @@ With SKSE Menu Framework installed, press **F1** and open **POErim Debug Menu**:
 | Page | What it does |
 |---|---|
 | Integration | Version, game runtime, and whether ARPG POV, Grid Inventory, Socketing and the affix table were found |
-| Inspect | The item last hovered in Grid Inventory, and every rolled item you carry: colour, points, item level, each affix with tier, value and range, the created enchantment's FormID, what the co-save holds for it |
+| Inspect | The item last hovered in Grid Inventory, and every rolled item you carry: colour, points, item level, prefix/suffix/implicit counts, each affix with its kind, tier, value and range, the created enchantment's FormID, what the co-save holds for it |
 | Craft simulator | Uses one orb on a copy of an item N times and shows the colour split. Changes nothing in the game |
 | Co-save | Counts of everything saved, a check for orphaned enchantments, and "clear rolled marks for this cell" (changes the save: asks first, and logs it) |
 | Log | Log level for this session, and where the log file is |
@@ -100,7 +106,7 @@ Spawning items and orbs, editing affixes, applying orbs to real items, drop tuni
 `RollHarness.exe` (in the `POErim-Tools` artifact) runs the roller and the orbs without the game.
 
 ```
-RollHarness DiabloLoot_affixes.csv --levels 1,12,25,35,40
+RollHarness DiabloLoot_affixes.csv --merge DiabloLoot_affixes_implicits.csv --levels 1,12,25,35,40
 RollHarness DiabloLoot_affixes.csv --craft transmute,augment,exalt,exalt,exalt
 RollHarness DiabloLoot_affixes.csv --chaos-until purple
 RollHarness DiabloLoot_affixes.csv --merge DiabloLoot_affixes_summermyst.csv --craft transmute,augment

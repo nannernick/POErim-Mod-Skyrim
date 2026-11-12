@@ -76,6 +76,59 @@ namespace roll
         }
     }
 
+    const char* KindName(AffixKind a_kind) noexcept
+    {
+        switch (a_kind) {
+        case AffixKind::kPrefix:   return "prefix";
+        case AffixKind::kSuffix:   return "suffix";
+        case AffixKind::kImplicit: return "implicit";
+        }
+        return "?";
+    }
+
+    AffixKind KindForCategory(std::string_view a_category) noexcept
+    {
+        // Path of Exile's habit: what makes an item HIT HARDER OR LIVE LONGER is
+        // a prefix -- damage, leech, life, armour -- and what adjusts it is a
+        // suffix: resistances, skills, costs, regeneration, utility, and the
+        // on-hit control effects, which also gives weapons enough suffixes to
+        // fill two slots.
+        static constexpr std::string_view kPrefixes[]{ "Weapon Damage", "Absorb", "Attribute",
+            "Physical", "Unarmed" };
+        for (const auto prefix : kPrefixes) {
+            if (a_category == prefix) {
+                return AffixKind::kPrefix;
+            }
+        }
+        return AffixKind::kSuffix;
+    }
+
+    namespace
+    {
+        int& CapStorage(AffixKind a_kind)
+        {
+            static int prefixes = 2;
+            static int suffixes = 2;
+            return a_kind == AffixKind::kPrefix ? prefixes : suffixes;
+        }
+    }
+
+    void SetAffixCaps(int a_maxPrefixes, int a_maxSuffixes) noexcept
+    {
+        CapStorage(AffixKind::kPrefix) = std::clamp(a_maxPrefixes, 0, kMaxAffixes);
+        CapStorage(AffixKind::kSuffix) = std::clamp(a_maxSuffixes, 0, kMaxAffixes);
+    }
+
+    int MaxPrefixes() noexcept
+    {
+        return CapStorage(AffixKind::kPrefix);
+    }
+
+    int MaxSuffixes() noexcept
+    {
+        return CapStorage(AffixKind::kSuffix);
+    }
+
     std::uint32_t ParseSlots(std::string_view a_text)
     {
         static const std::unordered_map<std::string, std::uint32_t> kNames{
@@ -163,7 +216,10 @@ namespace roll
     {
 
         // affixId,name,category,tier,points,minValue,maxValue,unit,duration,
-        // area,slots,weight,minItemLevel,mgef,npcExclude,prefix,suffix
+        // area,slots,weight,minItemLevel,mgef,npcExclude,prefix,suffix[,type]
+        //
+        // The eighteenth column, type (prefix / suffix / implicit), is optional:
+        // missing or blank, the category decides (KindForCategory).
         constexpr std::size_t kColumns = 17;
 
         // Seeded from what is already loaded, so an add-on file can see the base
@@ -281,6 +337,23 @@ namespace roll
                 affix.npcExclude = npcExclude != 0;
                 affix.prefix = fields.size() > 15 ? fields[15] : "";
                 affix.suffix = fields.size() > 16 ? fields[16] : "";
+                affix.kind = KindForCategory(affix.category);
+                if (fields.size() > 17 && !fields[17].empty()) {
+                    std::string type = fields[17];
+                    std::transform(type.begin(), type.end(), type.begin(),
+                        [](unsigned char a_ch) { return static_cast<char>(std::tolower(a_ch)); });
+                    if (type == "prefix") {
+                        affix.kind = AffixKind::kPrefix;
+                    } else if (type == "suffix") {
+                        affix.kind = AffixKind::kSuffix;
+                    } else if (type == "implicit") {
+                        affix.kind = AffixKind::kImplicit;
+                    } else {
+                        a_errors.push_back("line " + std::to_string(lineNo) + ": '" + fields[0] +
+                            "' has type '" + fields[17] + "'; expected prefix, suffix or implicit -- "
+                            "using " + KindName(affix.kind));
+                    }
+                }
                 index[affix.id] = _affixes.size();
                 _affixes.push_back(std::move(affix));
                 it = index.find(fields[0]);

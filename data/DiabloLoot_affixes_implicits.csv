@@ -1,0 +1,65 @@
+# Implicit affixes -- the last affix slot, one per item, tied to the kind of item.
+#
+# Merged on top of DiabloLoot_affixes.csv like any DiabloLoot_affixes_*.csv add-on.
+# An item rolls an implicit only when it rolls its fifth affix, which only happens
+# at item level 35 and up (fifthAffixMinLevel), and an Exalted Orb adds one to an
+# item whose two prefixes and two suffixes are full. Chaos keeps it; Scouring
+# removes it.
+#
+# Implicits are STRONGER than the same effect as a prefix or suffix: these rows are
+# the explicit ranges times 1.5. Points per tier are unchanged, so the colour bands
+# work as before. An item never carries an implicit and an explicit with the same
+# magic effect. Every item kind has three to choose from, so an item's own
+# prefixes and suffixes can never use up all of its options.
+#
+# The last column, type, must say implicit. Edit values freely; to add one, copy
+# a row, give it a new 
+affixId,name,category,tier,points,minValue,maxValue,unit,duration,area,slots,weight,minItemLevel,mgef,npcExclude,prefix,suffix,type
+imp_fire_damage,Fire Damage,Weapon Damage,1,1,5,11,flat,0,0,WEAPON,100,1,Skyrim.esm|0x04605A,0,Ember,of Burning,implicit
+imp_fire_damage,Fire Damage,Weapon Damage,2,2,12,23,flat,0,0,WEAPON,100,12,Skyrim.esm|0x04605A,0,Ember,of Burning,implicit
+imp_fire_damage,Fire Damage,Weapon Damage,3,3,24,38,flat,0,0,WEAPON,100,25,Skyrim.esm|0x04605A,0,Ember,of Burning,implicit
+imp_frost_damage,Frost Damage,Weapon Damage,1,1,5,11,flat,0,0,WEAPON,100,1,Skyrim.esm|0x04605B,0,Rime,of Frostbite,implicit
+imp_frost_damage,Frost Damage,Weapon Damage,2,2,12,23,flat,0,0,WEAPON,100,12,Skyrim.esm|0x04605B,0,Rime,of Frostbite,implicit
+imp_frost_damage,Frost Damage,Weapon Damage,3,3,24,38,flat,0,0,WEAPON,100,25,Skyrim.esm|0x04605B,0,Rime,of Frostbite,implicit
+imp_shock_damage,Shock Damage,Weapon Damage,1,1,5,11,flat,1,0,WEAPON,100,1,Skyrim.esm|0x04605C,0,Storm,of Sparks,implicit
+imp_shock_damage,Shock Damage,Weapon Damage,2,2,12,23,flat,1,0,WEAPON,100,12,Skyrim.esm|0x04605C,0,Storm,of Sparks,implicit
+imp_shock_damage,Shock Damage,Weapon Damage,3,3,24,38,flat,1,0,WEAPON,100,25,Skyrim.esm|0x04605C,0,Storm,of Sparks,implicit
+imp_health,Health,Attribute,1,1,15,30,flat,0,0,HEAD|BODY|AMULET,100,1,Skyrim.esm|0x0493AA,0,Hale,of Health,implicit
+imp_health,Health,Attribute,2,2,32,60,flat,0,0,HEAD|BODY|AMULET,100,12,Skyrim.esm|0x0493AA,0,Hale,of Health,implicit
+imp_health,Health,Attribute,3,3,62,90,flat,0,0,HEAD|BODY|AMULET,100,25,Skyrim.esm|0x0493AA,0,Hale,of Health,implicit
+imp_magicka,Magicka,Attribute,1,1,15,30,flat,0,0,HEAD|AMULET,100,1,Skyrim.esm|0x049504,0,Arcane,of Magicka,implicit
+imp_magicka,Magicka,Attribute,2,2,32,60,flat,0,0,HEAD|AMULET,100,12,Skyrim.esm|0x049504,0,Arcane,of Magicka,implicit
+imp_magicka,Magicka,Attribute,3,3,62,90,flat,0,0,HEAD|AMULET,100,25,Skyrim.esm|0x049504,0,Arcane,of Magicka,implicit
+imp_stamina,Stamina,Attribute,1,1,15,30,flat,0,0,FEET|AMULET,100,1,Skyrim.esm|0x049507,0,Vigorous,of Stamina,implicit
+imp_stamina,Stamina,Attribute,2,2,32,60,flat,0,0,FEET|AMULET,100,12,Skyrim.esm|0x049507,0,Vigorous,of Stamina,implicit
+imp_stamina,Stamina,Attribute,3,3,62,90,flat,0,0,FEET|AMULET,100,25,Skyrim.esm|0x049507,0,Vigorous,of Stamina,implicit
+imp_armor,Armor,Physical,1,1,8,15,flat,0,0,HEAD|BODY|FEET,100,1,Skyrim.esm|0x017120,0,Ironclad,of Warding,implicit
+imp_armor,Armor,Physical,2,2,17,30,flat,0,0,HEAD|BODY|FEET,100,12,Skyrim.esm|0x017120,0,Ironclad,of Warding,implicit
+imp_armor,Armor,Physical,3,3,32,53,flat,0,0,HEAD|BODY|FEET,100,25,Skyrim.esm|0x017120,0,Ironclad,of Warding,implicit
+imp_carry_weight,Carry Weight,Attribute,1,1,15,30,flat,0,0,BODY|FEET,100,1,Skyrim.esm|0x07A0F4,0,Unburdened,of Hauling,implicit
+imp_carry_weight,Carry Weight,Attribute,2,2,32,60,flat,0,0,BODY|FEET,100,12,Skyrim.esm|0x07A0F4,0,Unburdened,of Hauling,implicit
+imp_carry_weight,Carry Weight,Attribute,3,3,62,90,flat,0,0,BODY|FEET,100,25,Skyrim.esm|0x07A0F4,0,Unburdened,of Hauling,implicit
+imp_one_handed,One-Handed,Combat Skill,1,1,8,15,pct,0,0,HANDS,100,1,Skyrim.esm|0x07A0FF,0,Honed,of Wielding,implicit
+imp_one_handed,One-Handed,Combat Skill,2,2,17,30,pct,0,0,HANDS,100,12,Skyrim.esm|0x07A0FF,0,Honed,of Wielding,implicit
+imp_one_handed,One-Handed,Combat Skill,3,3,32,45,pct,0,0,HANDS,100,25,Skyrim.esm|0x07A0FF,0,Honed,of Wielding,implicit
+imp_two_handed,Two-Handed,Combat Skill,1,1,8,15,pct,0,0,HANDS,100,1,Skyrim.esm|0x07A106,0,Cleaving,of Smiting,implicit
+imp_two_handed,Two-Handed,Combat Skill,2,2,17,30,pct,0,0,HANDS,100,12,Skyrim.esm|0x07A106,0,Cleaving,of Smiting,implicit
+imp_two_handed,Two-Handed,Combat Skill,3,3,32,45,pct,0,0,HANDS,100,25,Skyrim.esm|0x07A106,0,Cleaving,of Smiting,implicit
+imp_archery,Archery,Combat Skill,1,1,8,15,pct,0,0,HANDS,100,1,Skyrim.esm|0x07A0FE,0,Keen-Eyed,of Archery,implicit
+imp_archery,Archery,Combat Skill,2,2,17,30,pct,0,0,HANDS,100,12,Skyrim.esm|0x07A0FE,0,Keen-Eyed,of Archery,implicit
+imp_archery,Archery,Combat Skill,3,3,32,45,pct,0,0,HANDS,100,25,Skyrim.esm|0x07A0FE,0,Keen-Eyed,of Archery,implicit
+imp_block,Block,Combat Skill,1,1,8,15,pct,0,0,SHIELD,100,1,Skyrim.esm|0x07A0F3,0,Bulwark,of Blocking,implicit
+imp_block,Block,Combat Skill,2,2,17,30,pct,0,0,SHIELD,100,12,Skyrim.esm|0x07A0F3,0,Bulwark,of Blocking,implicit
+imp_block,Block,Combat Skill,3,3,32,45,pct,0,0,SHIELD,100,25,Skyrim.esm|0x07A0F3,0,Bulwark,of Blocking,implicit
+imp_magic_resist,Magic Resist,Resistance,1,1,8,12,pct,0,0,SHIELD,100,1,Skyrim.esm|0x0B7A35,0,Warded,of Nullification,implicit
+imp_magic_resist,Magic Resist,Resistance,2,2,14,21,pct,0,0,SHIELD,100,12,Skyrim.esm|0x0B7A35,0,Warded,of Nullification,implicit
+imp_magic_resist,Magic Resist,Resistance,3,3,23,30,pct,0,0,SHIELD,100,25,Skyrim.esm|0x0B7A35,0,Warded,of Nullification,implicit
+imp_fire_resist,Fire Resist,Resistance,1,1,15,30,pct,0,0,RING|SHIELD,100,1,Skyrim.esm|0x048C8B,0,Firewalker's,of Waning Fire,implicit
+imp_fire_resist,Fire Resist,Resistance,2,2,32,53,pct,0,0,RING|SHIELD,100,12,Skyrim.esm|0x048C8B,0,Firewalker's,of Waning Fire,implicit
+imp_fire_resist,Fire Resist,Resistance,3,3,54,75,pct,0,0,RING|SHIELD,100,25,Skyrim.esm|0x048C8B,0,Firewalker's,of Waning Fire,implicit
+imp_frost_resist,Frost Resist,Resistance,1,1,15,30,pct,0,0,RING,100,1,Skyrim.esm|0x048F45,0,Hearthwarm,of Waning Frost,implicit
+imp_frost_resist,Frost Resist,Resistance,2,2,32,53,pct,0,0,RING,100,12,Skyrim.esm|0x048F45,0,Hearthwarm,of Waning Frost,implicit
+imp_frost_resist,Frost Resist,Resistance,3,3,54,75,pct,0,0,RING,100,25,Skyrim.esm|0x048F45,0,Hearthwarm,of Waning Frost,implicit
+imp_shock_resist,Shock Resist,Resistance,1,1,15,30,pct,0,0,RING,100,1,Skyrim.esm|0x049295,0,Grounded,of Waning Shock,implicit
+imp_shock_resist,Shock Resist,Resistance,2,2,32,53,pct,0,0,RING,100,12,Skyrim.esm|0x049295,0,Grounded,of Waning Shock,implicit
+imp_shock_resist,Shock Resist,Resistance,3,3,54,75,pct,0,0,RING,100,25,Skyrim.esm|0x049295,0,Grounded,of Waning Shock,implicit

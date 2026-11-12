@@ -19,20 +19,6 @@ namespace roll
             return ctx;
         }
 
-        // The pool for adding to THIS item: everything a fresh roll could pick,
-        // minus what the item already has. That subtraction is the whole of the
-        // "no duplicate affix" rule.
-        std::vector<const Affix*> PoolFor(const RolledItem& a_item, const RollContext& a_ctx,
-            const AffixTable& a_table)
-        {
-            auto pool = EligiblePool(a_table, a_ctx);
-            std::erase_if(pool, [&](const Affix* a_candidate) {
-                return std::any_of(a_item.affixes.begin(), a_item.affixes.end(),
-                    [&](const RolledAffix& a_have) { return a_have.affix == a_candidate; });
-            });
-            return pool;
-        }
-
         // Draws until one lands or the pool runs dry. kSkipped costs an affix
         // from the pool and nothing else, exactly as it does inside Roll.
         bool DrawOne(std::vector<const Affix*>& a_pool, const RollContext& a_ctx,
@@ -60,32 +46,57 @@ namespace roll
             }
         }
 
-        // The count rule alone -- the part that needs no table.
-        CraftVerdict CountRule(Orb a_orb, int a_count, int a_itemLevel, const Tuning& a_tuning)
+        int ExplicitCap()
         {
+            return MaxPrefixes() + MaxSuffixes();
+        }
+
+        // What an Exalted Orb would add: an explicit while there is room for
+        // one, the implicit once the explicits are full.
+        enum class ExaltTarget
+        {
+            kExplicit,
+            kImplicit,
+        };
+
+        ExaltTarget ExaltTargetFor(const RolledItem& a_item)
+        {
+            const bool explicitsFull = a_item.Count(AffixKind::kPrefix) >= MaxPrefixes() &&
+                                       a_item.Count(AffixKind::kSuffix) >= MaxSuffixes();
+            return explicitsFull ? ExaltTarget::kImplicit : ExaltTarget::kExplicit;
+        }
+
+        // The count rule alone -- the part that needs no table.
+        CraftVerdict CountRule(Orb a_orb, const RolledItem& a_item, int a_itemLevel,
+            const Tuning& a_tuning)
+        {
+            const int explicits = a_item.Explicits();
             switch (a_orb) {
             case Orb::kTransmute:
-                return a_count == 0 ? CraftVerdict::kOk : CraftVerdict::kNeedsNoAffixes;
+                return a_item.affixes.empty() ? CraftVerdict::kOk : CraftVerdict::kNeedsNoAffixes;
             case Orb::kAugment:
-                return a_count == 1 ? CraftVerdict::kOk : CraftVerdict::kNeedsOneAffix;
+                return explicits == 1 ? CraftVerdict::kOk : CraftVerdict::kNeedsOneAffix;
             case Orb::kExalt:
-                if (a_count < 2) {
+                if (explicits < 2) {
                     return CraftVerdict::kNeedsTwoToFour;
                 }
-                if (a_count >= kMaxAffixes) {
+                if (ExaltTargetFor(a_item) == ExaltTarget::kExplicit) {
+                    return CraftVerdict::kOk;
+                }
+                if (a_item.HasImplicit()) {
                     return CraftVerdict::kFull;
                 }
-                // ★THE SAME FLOOR THE ROLLER HOLDS. Red needs five affixes and
-                // five affixes need this level; an orb is not a way round the
-                // promise that red starts here and not a level sooner.
-                if (a_count == kMaxAffixes - 1 && a_itemLevel < a_tuning.fifthAffixMinLevel) {
+                // ★THE SAME FLOOR THE ROLLER HOLDS. The implicit is the last
+                // slot, red needs it, and red starts at this level -- an orb is
+                // not a way round that.
+                if (a_itemLevel < a_tuning.fifthAffixMinLevel) {
                     return CraftVerdict::kFifthLocked;
                 }
                 return CraftVerdict::kOk;
             case Orb::kChaos:
-                return a_count >= 2 ? CraftVerdict::kOk : CraftVerdict::kNeedsTwoOrMore;
+                return explicits >= 2 ? CraftVerdict::kOk : CraftVerdict::kNeedsTwoOrMore;
             case Orb::kScour:
-                return a_count >= 1 ? CraftVerdict::kOk : CraftVerdict::kNothingToRemove;
+                return a_item.affixes.empty() ? CraftVerdict::kNothingToRemove : CraftVerdict::kOk;
             }
             return CraftVerdict::kNotAffixable;
         }
@@ -93,6 +104,17 @@ namespace roll
         bool Adds(Orb a_orb) noexcept
         {
             return a_orb == Orb::kTransmute || a_orb == Orb::kAugment || a_orb == Orb::kExalt;
+        }
+
+        // The pool the next draw on this item comes from.
+        std::vector<const Affix*> PoolFor(Orb a_orb, const RolledItem& a_item,
+            const RollContext& a_ctx, const AffixTable& a_table)
+        {
+            auto pool = (a_orb == Orb::kExalt && ExaltTargetFor(a_item) == ExaltTarget::kImplicit)
+                            ? ImplicitPool(a_table, a_ctx)
+                            : EligiblePool(a_table, a_ctx);
+            FitPool(pool, a_item);
+            return pool;
         }
     }
 
@@ -138,12 +160,12 @@ namespace roll
         case CraftVerdict::kOk:               return "";
         case CraftVerdict::kNotAffixable:     return "This item cannot carry affixes";
         case CraftVerdict::kNeedsNoAffixes:   return "Needs an item with no affixes";
-        case CraftVerdict::kNeedsOneAffix:    return "Needs an item with exactly one affix";
-        case CraftVerdict::kNeedsTwoToFour:   return "Needs an item with two to four affixes";
-        case CraftVerdict::kNeedsTwoOrMore:   return "Needs an item with at least two affixes";
+        case CraftVerdict::kNeedsOneAffix:    return "Needs an item with exactly one prefix or suffix";
+        case CraftVerdict::kNeedsTwoToFour:   return "Needs an item with at least two prefixes or suffixes";
+        case CraftVerdict::kNeedsTwoOrMore:   return "Needs an item with at least two prefixes or suffixes";
         case CraftVerdict::kNothingToRemove:  return "This item has no affixes to remove";
         case CraftVerdict::kFull:             return "This item cannot hold another affix";
-        case CraftVerdict::kFifthLocked:      return "Item level too low for a fifth affix";
+        case CraftVerdict::kFifthLocked:      return "Item level 35 needed for an implicit";
         case CraftVerdict::kNoEligibleAffix:  return "No affix left that this item can roll";
         }
         return "";
@@ -155,17 +177,29 @@ namespace roll
         if (a_ctx.itemSlots == kNone) {
             return CraftVerdict::kNotAffixable;
         }
-        const auto verdict = CountRule(a_orb, static_cast<int>(a_item.affixes.size()),
-            a_ctx.itemLevel, a_tuning);
+        const auto verdict = CountRule(a_orb, a_item, a_ctx.itemLevel, a_tuning);
         if (verdict != CraftVerdict::kOk || a_orb == Orb::kScour) {
             return verdict;
         }
 
         // Anything that draws needs something to draw from. For Chaos the
-        // item's own affixes go back in the pool, so the plain pool is asked.
+        // item's explicits go back in the pool, so only the implicit is held
+        // against it.
         const auto ctx = CraftContext(a_ctx);
-        const bool any = Adds(a_orb) ? !PoolFor(a_item, ctx, a_table).empty()
-                                     : !EligiblePool(a_table, ctx).empty();
+        bool       any = false;
+        if (Adds(a_orb)) {
+            any = !PoolFor(a_orb, a_item, ctx, a_table).empty();
+        } else {
+            RolledItem implicitOnly;
+            for (const auto& rolled : a_item.affixes) {
+                if (rolled.affix && rolled.affix->Implicit()) {
+                    implicitOnly.affixes.push_back(rolled);
+                }
+            }
+            auto pool = EligiblePool(a_table, ctx);
+            FitPool(pool, implicitOnly);
+            any = !pool.empty();
+        }
         return any ? CraftVerdict::kOk : CraftVerdict::kNoEligibleAffix;
     }
 
@@ -179,13 +213,15 @@ namespace roll
         const auto ctx = CraftContext(a_ctx);
 
         if (a_orb == Orb::kScour) {
+            // Everything, the implicit included: Scouring returns the plain
+            // base, which is what the brief asks of it.
             a_item.affixes.clear();
             a_item.tier = 0;
             return CraftVerdict::kOk;
         }
 
         if (Adds(a_orb)) {
-            auto        pool = PoolFor(a_item, ctx, a_table);
+            auto        pool = PoolFor(a_orb, a_item, ctx, a_table);
             RolledAffix added;
             if (!DrawOne(pool, ctx, a_tuning, a_rng, added)) {
                 return CraftVerdict::kNoEligibleAffix;   // a_item untouched
@@ -195,25 +231,48 @@ namespace roll
             return CraftVerdict::kOk;
         }
 
-        // Chaos: every affix rerolled, the count kept. Built to one side so a
-        // pool that cannot fill the count leaves the item as it was -- an orb
-        // that quietly removed an affix would be a worse Scouring.
-        const auto wanted = a_item.affixes.size();
-        auto       pool = EligiblePool(a_table, ctx);
+        // Chaos: the explicits rerolled, their count kept, the implicit kept.
+        // Built to one side so a pool that cannot fill the count leaves the
+        // item as it was -- an orb that quietly removed an affix would be a
+        // worse Scouring.
+        //
+        // An item from before the caps existed can carry more explicits than
+        // they allow (three prefixes, say). It is rerolled to the caps, and if
+        // that loses it an affix and it has room for the implicit, it gets one
+        // -- so a five-affix item stays five.
+        RolledItem fresh;
+        for (const auto& rolled : a_item.affixes) {
+            if (rolled.affix && rolled.affix->Implicit()) {
+                fresh.affixes.push_back(rolled);
+            }
+        }
+        const int had = a_item.Explicits();
+        const int wanted = (std::min)(had, ExplicitCap());
 
-        std::vector<RolledAffix> fresh;
-        fresh.reserve(wanted);
-        while (fresh.size() < wanted) {
+        auto pool = EligiblePool(a_table, ctx);
+        FitPool(pool, fresh);
+        int drawn = 0;
+        while (drawn < wanted) {
             RolledAffix rolled;
             if (!DrawOne(pool, ctx, a_tuning, a_rng, rolled)) {
                 break;
             }
-            fresh.push_back(rolled);
+            fresh.affixes.push_back(rolled);
+            ++drawn;
+            FitPool(pool, fresh);
         }
-        if (fresh.size() < wanted) {
+        if (drawn < wanted) {
             return CraftVerdict::kNoEligibleAffix;
         }
-        a_item.affixes = std::move(fresh);
+        if (had > wanted && !fresh.HasImplicit() && ctx.itemLevel >= a_tuning.fifthAffixMinLevel) {
+            auto        implicits = ImplicitPool(a_table, ctx);
+            RolledAffix rolled;
+            FitPool(implicits, fresh);
+            if (DrawOne(implicits, ctx, a_tuning, a_rng, rolled)) {
+                fresh.affixes.push_back(rolled);
+            }
+        }
+        a_item.affixes = std::move(fresh.affixes);
         Recount(a_item);
         return CraftVerdict::kOk;
     }
