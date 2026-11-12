@@ -18,7 +18,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: ${{ github.workspace }}/vcpkg_binary_cache
-          key: vcpkg-${{ hashFiles('vcpkg.json') }}
+          key: vcpkg-${{ hashFiles('vcpkg.json', 'grid/plugin/vcpkg.json') }}
           restore-keys: vcpkg-
 
       - name: Setup vcpkg
@@ -36,6 +36,18 @@ jobs:
       - name: Build plugin and harness
         run: cmake --build build --config Release --target DiabloInSkyrim RollHarness
 
+      # Grid Inventory, POErim's build (grid/). Its own vcpkg manifest and
+      # build folder; installed over the Nexus Grid Inventory.
+      - name: Configure Grid Inventory
+        run: >
+          cmake -B build-grid -S grid/plugin -G "Visual Studio 17 2022" -A x64
+          -DCMAKE_TOOLCHAIN_FILE="${{ github.workspace }}/vcpkg/scripts/buildsystems/vcpkg.cmake"
+          -DVCPKG_TARGET_TRIPLET=x64-windows-static
+          -DVCPKG_MANIFEST_DIR="${{ github.workspace }}/grid/plugin"
+
+      - name: Build Grid Inventory
+        run: cmake --build build-grid --config Release
+
       - name: Run the roll harness
         shell: pwsh
         run: |
@@ -44,6 +56,20 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit 1 }
           & $harness data/DiabloLoot_affixes.csv --samples 20000 --levels 1,25,40 --craft transmute,augment,exalt,exalt,exalt,chaos,scour
           if ($LASTEXITCODE -ne 0) { exit 1 }
+          $out = & $harness data/DiabloLoot_affixes.csv --merge data/DiabloLoot_affixes_implicits.csv --craft "transmute,augment,exalt*4,chaos*20,divine,vaal" --level 40 --chains 5000
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+          $out
+          if ($out -match "<-- BUG") { Write-Error "an orb broke a cap or a mod group"; exit 1 }
+          & $harness --drops --levels 1,20,50 --samples 20000
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+
+      - name: Check the plugin is the one the generator makes
+        shell: pwsh
+        run: |
+          python tools/esp/build_esp.py build/DiabloInSkyrim.esp
+          if ((Get-FileHash build/DiabloInSkyrim.esp).Hash -ne (Get-FileHash data/DiabloInSkyrim.esp).Hash) {
+            Write-Error "data/DiabloInSkyrim.esp is stale: run python tools/esp/build_esp.py"; exit 1
+          }
 
       - name: Package
         shell: pwsh
@@ -60,6 +86,16 @@ jobs:
           Copy-Item build/Release/DiabloInSkyrim.pdb dist-tools -ErrorAction SilentlyContinue
           Copy-Item data/DiabloLoot_affixes.csv dist-tools
           Copy-Item data/DiabloLoot_affixes_implicits.csv $plugins
+          Copy-Item data/DiabloInSkyrim.esp dist
+          $gridDll = Get-ChildItem build-grid -Recurse -Filter GridInventory.dll | Where-Object { $_.FullName -match 'Release' } | Select-Object -First 1
+          if (-not $gridDll) { Write-Error "GridInventory.dll was not built"; exit 1 }
+          Copy-Item $gridDll.FullName $plugins
+          $gridPdb = Get-ChildItem build-grid -Recurse -Filter GridInventory.pdb | Select-Object -First 1
+          if ($gridPdb) { Copy-Item $gridPdb.FullName dist-tools }
+          New-Item -ItemType Directory -Force -Path "$plugins/GridInventory_fallback/item" | Out-Null
+          Copy-Item data/GridInventory_fallback/item/*.png "$plugins/GridInventory_fallback/item"
+          New-Item -ItemType Directory -Force -Path dist/textures/DiabloInSkyrim/orbs | Out-Null
+          Copy-Item data/textures/DiabloInSkyrim/orbs/*.dds dist/textures/DiabloInSkyrim/orbs
 
       - name: Upload mod (Vortex-installable)
         uses: actions/upload-artifact@v4

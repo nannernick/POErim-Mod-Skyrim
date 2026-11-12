@@ -1,0 +1,18 @@
+{
+  "name": "grid-inventory",
+  "version-string": "1.0.0",
+  "builtin-baseline": "3895230f38e498525f2560a281223d12066fa74a",
+  "dependencies": [
+    "spdlog",
+    "fmt",
+    "rapidcsv",
+    "directxtk",
+    {
+      "name": "imgui",
+      "features": [
+        "dx11-binding",
+        "win32-binding"
+      ]
+    }
+  ]
+}

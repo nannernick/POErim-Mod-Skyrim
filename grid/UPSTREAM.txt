@@ -1,0 +1,9 @@
+Grid Inventory by skypia0147-dev (https://github.com/skypia0147-dev/grid-inventory),
+GPL-3.0 with the exceptions in EXCEPTIONS.txt. Imported at upstream commit
+c0d8718b6ea983d8161548192f82d850aa6d0518 (1.6.5) and modified for POErim:
+the host side of the Tinter / Annotator / Pricer / Socketer tables, the orb
+Applier table and its right-click-to-use flow, and per-item PNGs ahead of the
+3D capture (GridInventory_ui.ini ItemPngFirst, default on).
+
+Builds GridInventory.dll, which installs over Grid Inventory from Nexus (that
+mod still provides the ESP, the art and the INIs).
