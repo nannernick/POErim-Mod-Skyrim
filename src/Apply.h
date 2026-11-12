@@ -178,6 +178,42 @@ namespace Apply
     // synchronously, on this thread, from inside PickUpObject.
     [[nodiscard]] bool InSurgery();
 
+    // ---- 2.1.0: implicits replace vanilla enchantments ----------------------
+
+    // The plain record an enchanted variant was generated from (WEAP CNAM /
+    // ARMO TNAM), or nullptr when it names none or the template is itself
+    // enchanted.
+    [[nodiscard]] RE::TESBoundObject* PlainTemplateOf(RE::TESBoundObject* a_object);
+
+    enum class VanillaKind
+    {
+        kNone,                // no foreign enchantment
+        kRecordEnchanted,     // a generic enchanted variant: swap to its template
+        kInstanceEnchanted,   // a generic base with the player's own enchantment
+        kRefused,             // a unique, an artifact, a quest item, a socketed item
+    };
+
+    // ★HOW UNIQUES, ARTIFACTS AND QUEST ITEMS ARE TOLD APART:
+    //   quest      the instance carries a quest alias (kAliasInstanceArray)
+    //   unique /   not generic: no leveled list and no outfit reaches the
+    //   artifact   record (IndexLeveledItems), or an enchanted record with no
+    //              plain template to go back to -- no artifact has one
+    // Anything else is ordinary loot and is replaceable.
+    [[nodiscard]] VanillaKind ClassifyEnchanted(RE::TESBoundObject* a_object,
+        const RE::ExtraDataList* a_xList);
+
+    // Container / vendor chest / corpse: every LOOSE unit of an enchanted
+    // generic variant becomes its plain template (remove N, add N). Units with
+    // a list of their own are left alone. Returns how many were swapped.
+    // GAME THREAD; never on the player.
+    int SwapVanillaLoose(RE::TESObjectREFR* a_refr);
+
+    // Puts a new roll on an item that already has a list, releasing whatever
+    // created enchantment it carried AFTER the new one is built. A failure
+    // leaves the item exactly as it was (the 1.2.0 order lost the affixes).
+    Applied Replace(const roll::RolledItem& a_rolled, RE::TESBoundObject* a_object,
+        RE::ExtraDataList* a_xList);
+
     // Releases a created enchantment previously attached by ToItem, decrementing
     // the manager's refcount rather than merely unhooking the extra data.
     //

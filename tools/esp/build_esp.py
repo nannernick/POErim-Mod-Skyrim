@@ -3,15 +3,18 @@
 
 Contents (FormIDs frozen, never renumber):
   0x800  KYWD DIS_CurrencyOrb
-  0x801+ MISC one per orb, in roll::Orb order (src/roll/Craft.h)
+  0x801+ MISC one per orb, in roll::Orb order (src/roll/Craft.h); 0x809 is the
+         Regal Orb (2.1.0)
 
-The meshes and the vanilla VendorItemGem keyword are attached by the plugin at
-load (Orbs.cpp), so this file references nothing in Skyrim.esm by FormID.
+No MODL on purpose: the plugin gives EVERY orb the same small vanilla cut-gem
+mesh at load (Orbs.cpp PickGemModel) and attaches the vanilla VendorItemGem
+keyword, so this file references nothing in Skyrim.esm by FormID and cannot
+point an orb at a container or chest mesh.
 Run:  python tools/esp/build_esp.py data/DiabloInSkyrim.esp
 """
 import struct, sys
 
-ORBS = [  # editor id, name, value, weight -- roll::Orb order
+ORBS = [  # editor id, name, value -- roll::Orb order (weight 0)
     ("DIS_OrbTransmute", "Orb of Transmutation", 5),
     ("DIS_OrbAugment", "Orb of Augmentation", 8),
     ("DIS_OrbAlchemy", "Orb of Alchemy", 40),
@@ -20,6 +23,7 @@ ORBS = [  # editor id, name, value, weight -- roll::Orb order
     ("DIS_OrbScour", "Orb of Scouring", 30),
     ("DIS_OrbDivine", "Divine Orb", 400),
     ("DIS_OrbVaal", "Vaal Orb", 100),
+    ("DIS_OrbRegal", "Regal Orb", 50),
 ]
 OWN = 0x01000000  # one master: own forms are file index 01
 

@@ -1,6 +1,6 @@
 {
   "name": "diablo-in-skyrim",
-  "version-string": "1.2.0",
+  "version-string": "2.1.0",
   "builtin-baseline": "3895230f38e498525f2560a281223d12066fa74a",
   "dependencies": [
     "spdlog",

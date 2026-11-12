@@ -12,6 +12,8 @@
 #include "Crafting.h"
 #include "Distribute.h"
 #include "GridTint.h"
+#include "LootApi.h"
+#include "TableReload.h"
 #include "Persist.h"
 #include "Records.h"
 #include "Sockets.h"
@@ -57,19 +59,27 @@ namespace
         }
     }
 
-    const ImVec4 kBandColour[roll::kBandCount]{
-        { 0.80f, 0.80f, 0.80f, 1.0f },   // white
-        { 0.41f, 0.61f, 1.00f, 1.0f },   // blue    -- the same five GridTint offers the grid
-        { 0.94f, 0.84f, 0.39f, 1.0f },   // yellow
-        { 0.73f, 0.47f, 0.94f, 1.0f },   // purple
-        { 1.00f, 0.55f, 0.24f, 1.0f },   // orange
-        { 0.90f, 0.24f, 0.27f, 1.0f },   // red
-    };
-
-    const ImVec4& BandColour(int a_band)
+    // ImU32 (0xAABBGGRR) -> ImVec4, so the menu shows the INI's own colours.
+    ImVec4 FromRgba(std::uint32_t a_rgba)
     {
-        return kBandColour[std::clamp(a_band, 0, roll::kBandCount - 1)];
+        return { static_cast<float>(a_rgba & 0xFF) / 255.0f, static_cast<float>((a_rgba >> 8) & 0xFF) / 255.0f,
+            static_cast<float>((a_rgba >> 16) & 0xFF) / 255.0f, 1.0f };
     }
+
+    ImVec4 RarityColour(roll::Rarity a_rarity, bool a_corrupted)
+    {
+        if (a_corrupted) {
+            return FromRgba(Config::RarityColor(Config::RarityColour::kCorrupted));
+        }
+        switch (a_rarity) {
+        case roll::Rarity::kMagic: return FromRgba(Config::RarityColor(Config::RarityColour::kMagic));
+        case roll::Rarity::kRare:  return FromRgba(Config::RarityColor(Config::RarityColour::kRare));
+        default:                   return FromRgba(Config::RarityColor(Config::RarityColour::kNormal));
+        }
+    }
+
+    const ImVec4 kBad{ 0.90f, 0.24f, 0.27f, 1.0f };
+    const ImVec4 kGood{ 0.45f, 0.85f, 0.45f, 1.0f };
 
     // ---- one item, as the inspector and the simulator see it ----------------
 
@@ -181,50 +191,60 @@ namespace
     void DrawItem(const Item& a_item)
     {
         const auto& view = a_item.view;
-        const int   band = view.band ? view.band : static_cast<int>(roll::BandOf(view.rolled.tier));
+        const auto  rarity = roll::RarityOf(view.rolled);
 
-        TextColored(BandColour(band), "%s%s", a_item.name.c_str(), a_item.worn ? "  (worn)" : "");
-        Text("Band: %s   Tier points: %d of %d", roll::BandName(static_cast<roll::Band>(band)),
-            view.rolled.tier, roll::kMaxTier);
+        TextColored(RarityColour(rarity, view.rolled.corrupted), "%s%s", a_item.name.c_str(),
+            a_item.worn ? "  (worn)" : "");
+        Text("Rarity: %s%s   Mods: %d   Implicits: %d of %d   Points: %d", roll::RarityName(rarity),
+            view.rolled.corrupted ? " (corrupted)" : "", view.rolled.Explicits(), view.rolled.Implicits(),
+            roll::kMaxImplicits, view.rolled.tier);
         Text("Item level: %u%s", static_cast<unsigned>(view.record.itemLevel),
             (view.record.flags & roll::kRecordLegacy) ? "  (estimated: rebuilt from the enchantment)" : "");
         Text("Base form: %08X   Created enchantment: %08X", a_item.base, view.enchantment);
-        Text("Slots: %s   Prefixes %d/%d  Suffixes %d/%d  Implicit %s",
-            roll::SlotsToString(a_item.slots).c_str(), view.rolled.Count(roll::AffixKind::kPrefix),
-            roll::MaxPrefixes(), view.rolled.Count(roll::AffixKind::kSuffix), roll::MaxSuffixes(),
-            view.rolled.HasImplicit() ? "yes" : "no");
-        Text("Co-save: band %s, ours %s, record %s%s",
-            Persist::EnchTier(view.enchantment) ? "yes" : "no",
+        const bool magic = rarity == roll::Rarity::kMagic;
+        Text("Slots: %s   Prefixes %d/%d  Suffixes %d/%d", roll::SlotsToString(a_item.slots).c_str(),
+            view.rolled.Count(roll::AffixKind::kPrefix), magic ? roll::kMagicMaxPrefixes : roll::MaxPrefixes(),
+            view.rolled.Count(roll::AffixKind::kSuffix), magic ? roll::kMagicMaxSuffixes : roll::MaxSuffixes());
+        Text("Co-save: rarity code %02X, ours %s, record %s%s%s", Persist::EnchTier(view.enchantment),
             Persist::IsAffixEnch(view.enchantment) ? "yes" : "no",
-            view.record.affixes.empty() ? "no" : "yes",
-            (view.record.flags & roll::kRecordCrafted) ? ", crafted" : "");
+            view.record.affixes.empty() && view.record.implicits.empty() ? "no" : "yes",
+            (view.record.flags & roll::kRecordCrafted) ? ", crafted" : "",
+            (view.record.flags & roll::kRecordImplicitGranted) ? ", implicit granted later" : "");
         if (!view.complete) {
-            TextColored(BandColour(5), "Some affixes on this item are no longer in the affix table; "
-                                       "it cannot be crafted on.");
+            TextColored(kBad, "Some mods on this item are no longer in the affix table; "
+                              "it cannot be crafted on.");
         }
 
+        const auto list = [&](const std::vector<roll::AffixRecord>& a_entries) {
+            for (const auto& entry : a_entries) {
+                const roll::Affix* affix = nullptr;
+                if (const auto* table = Records::Table()) {
+                    affix = roll::FindAffix(*table, entry.id);
+                }
+                const auto* tier = affix ? roll::FindTier(*affix, entry.tier) : nullptr;
+                if (affix && tier) {
+                    BulletText("%s %s  tier %d (%d pt)  value %.2f  range %.2f to %.2f  [%s]",
+                        roll::KindName(affix->kind), affix->name.c_str(), tier->tier, tier->points,
+                        entry.value, tier->minValue, tier->maxValue, entry.id.c_str());
+                } else {
+                    BulletText("%s  tier %u  value %.2f  (not in the table)", entry.id.c_str(),
+                        static_cast<unsigned>(entry.tier), entry.value);
+                }
+            }
+        };
         Spacing();
-        for (const auto& entry : view.record.affixes) {
-            const roll::Affix* affix = nullptr;
-            if (const auto* table = Records::Table()) {
-                affix = roll::FindAffix(*table, entry.id);
-            }
-            const auto* tier = affix ? roll::FindTier(*affix, entry.tier) : nullptr;
-            if (affix && tier) {
-                BulletText("%s %s  tier %d (%d pt)  value %.2f  range %.2f to %.2f  [%s]",
-                    roll::KindName(affix->kind), affix->name.c_str(), tier->tier, tier->points,
-                    entry.value, tier->minValue, tier->maxValue, entry.id.c_str());
-            } else {
-                BulletText("%s  tier %u  value %.2f  (not in the table)", entry.id.c_str(),
-                    static_cast<unsigned>(entry.tier), entry.value);
-            }
+        if (!view.record.implicits.empty()) {
+            TextColored(RarityColour(rarity, view.rolled.corrupted), "Implicit");
+            list(view.record.implicits);
         }
+        list(view.record.affixes);
     }
 
     // ---- page: Inspect -------------------------------------------------------
 
     void __stdcall RenderInspect()
     {
+        const Records::ReadGuard tableGuard{ Records::TableLock() };
         SeparatorText("Hovered in Grid Inventory");
         Item hovered;
         if (HoveredItem(hovered)) {
@@ -290,7 +310,7 @@ namespace
         std::string                       source;
         std::string                       orb;
         std::string                       refusal;
-        std::array<int, roll::kBandCount> bands{};
+        std::array<int, 4>                rarity{};   // normal, magic, rare, corrupted
         double                            meanAffixes{ 0.0 };
     };
 
@@ -326,8 +346,11 @@ namespace
                 break;
             }
             ++g_sim.worked;
-            g_sim.bands[static_cast<std::size_t>(roll::BandOf(item.tier))]++;
-            affixes += static_cast<long long>(item.affixes.size());
+            g_sim.rarity[static_cast<std::size_t>(roll::RarityOf(item)) - 1]++;
+            if (item.corrupted) {
+                g_sim.rarity[3]++;
+            }
+            affixes += item.Explicits();
         }
         if (g_sim.worked > 0) {
             g_sim.meanAffixes = static_cast<double>(affixes) / g_sim.worked;
@@ -337,13 +360,14 @@ namespace
 
     void __stdcall RenderCraft()
     {
+        const Records::ReadGuard tableGuard{ Records::TableLock() };
         static int s_source = 0;      // 0 = plain item, 1 = hovered, 2+ = inventory snapshot
         static int s_slot = 0;
         static int s_level = 20;
         static int s_orb = 0;
         static int s_samples = 1000;
 
-        TextWrapped("Uses one orb on a copy of an item, many times over, and shows what colour "
+        TextWrapped("Uses one orb on a copy of an item, many times over, and shows what rarity "
                     "the copies come out. Nothing in the game is changed and no orb is spent.");
 
         SeparatorText("Item");
@@ -357,7 +381,7 @@ namespace
         }
         std::erase_if(inventory, [](const Item& a_item) { return a_item.plain; });
 
-        std::vector<std::string> labels{ "A plain item" };
+        std::vector<std::string> labels{ "A normal item (base implicit only)" };
         labels.push_back(haveHovered ? std::format("Hovered: {}", hovered.name)
                                      : std::string{ "Hovered: (nothing)" });
         for (const auto& item : inventory) {
@@ -393,7 +417,16 @@ namespace
             SliderInt("Item level", &s_level, 1, 80);
             ctx.itemLevel = s_level;
             ctx.itemSlots = kSlotChoices[std::clamp(s_slot, 0, static_cast<int>(std::size(kSlotChoices)) - 1)].mask;
-            sourceName = std::format("plain {}, item level {}", names[static_cast<std::size_t>(s_slot)], s_level);
+            sourceName = std::format("normal {}, item level {}", names[static_cast<std::size_t>(s_slot)], s_level);
+            if (const auto* table = Records::Table()) {
+                roll::Tuning base;
+                for (auto& band : base.bands) {
+                    band.countWeights.fill(0);
+                    band.countWeights[0] = 1;
+                }
+                roll::Rng probe{ 777u };
+                start = roll::Roll(*table, ctx, base, probe);
+            }
         } else {
             const Item* item = nullptr;
             if (s_source == 1) {
@@ -405,14 +438,14 @@ namespace
                 TextDisabled("Hover a rolled item in Grid Inventory first.");
                 usable = false;
             } else if (!item->view.complete) {
-                TextDisabled("That item has affixes the table no longer knows; it cannot be crafted on.");
+                TextDisabled("That item has mods the table no longer knows; it cannot be crafted on.");
                 usable = false;
             } else {
                 start = item->view.rolled;
                 ctx.itemLevel = item->view.record.itemLevel;
                 ctx.itemSlots = item->slots;
-                sourceName = std::format("{}, item level {}, {} affix(es)", item->name, ctx.itemLevel,
-                    start.affixes.size());
+                sourceName = std::format("{}, item level {}, {} mod(s)", item->name, ctx.itemLevel,
+                    start.Explicits());
                 Text("%s", sourceName.c_str());
             }
         }
@@ -438,18 +471,18 @@ namespace
         SeparatorText("Result");
         Text("%s on %s", g_sim.orb.c_str(), g_sim.source.c_str());
         if (!g_sim.refusal.empty()) {
-            TextColored(BandColour(5), "Refused: %s", g_sim.refusal.c_str());
+            TextColored(kBad, "Refused: %s", g_sim.refusal.c_str());
             if (g_sim.worked == 0) {
                 return;
             }
         }
-        Text("Worked %d of %d time(s); mean affixes afterwards %.2f", g_sim.worked, g_sim.samples,
+        Text("Worked %d of %d time(s); mean mods afterwards %.2f", g_sim.worked, g_sim.samples,
             g_sim.meanAffixes);
-        for (int b = 0; b < roll::kBandCount; ++b) {
-            const int   count = g_sim.bands[static_cast<std::size_t>(b)];
+        static constexpr const char* kRarityNames[]{ "normal", "magic", "rare", "corrupted" };
+        for (std::size_t b = 0; b < g_sim.rarity.size(); ++b) {
+            const int   count = g_sim.rarity[b];
             const float share = g_sim.worked > 0 ? static_cast<float>(count) / static_cast<float>(g_sim.worked) : 0.0f;
-            const auto  overlay = std::format("{}  {}  ({:.1f}%)", roll::BandName(static_cast<roll::Band>(b)),
-                count, 100.0f * share);
+            const auto  overlay = std::format("{}  {}  ({:.1f}%)", kRarityNames[b], count, 100.0f * share);
             ProgressBar(share, ImVec2(-1.0f, 0.0f), overlay.c_str());
         }
     }
@@ -479,14 +512,15 @@ namespace
 
     void __stdcall RenderForge()
     {
+        const Records::ReadGuard tableGuard{ Records::TableLock() };
         static int  s_orb = 0;
         static bool s_confirm = false;
         static char s_base[16] = "00012EB7";   // Iron Sword
-        static int  s_band = 1;
+        static int  s_rarity = 1;
         static int  s_level = 20;
 
-        TextWrapped("Uses orbs on the items you carry without spending any, edits single affixes, "
-                    "and spawns rolled items. All of it changes your save: keep a backup.");
+        TextWrapped("Uses orbs on the items you carry without spending any, edits single mods and "
+                    "implicits, and spawns rolled items. All of it changes your save: keep a backup.");
 
         if (Button("Read my inventory")) {
             RunOnGameThread(ReadInventory);
@@ -540,7 +574,8 @@ namespace
             const auto  target = item.Target();
 
             if (item.plain) {
-                Text("%s  --  plain, would roll at item level %d", item.name.c_str(), item.Level());
+                Text("%s  --  plain (no implicit yet); gets its base implicit at item level %d",
+                    item.name.c_str(), item.Level());
             } else {
                 DrawItem(item);
             }
@@ -562,7 +597,7 @@ namespace
                 ? roll::CanCraft(orb, item.plain ? roll::RolledItem{} : item.view.rolled, ctx, *table, tuning)
                 : roll::CraftVerdict::kNotAffixable;
             if (!readable) {
-                TextDisabled("This item has affixes the table no longer knows; it can't be crafted.");
+                TextDisabled("This item has mods the table no longer knows; it can't be crafted.");
             } else if (verdict != roll::CraftVerdict::kOk) {
                 TextDisabled("%s", roll::Reason(verdict));
             }
@@ -577,22 +612,23 @@ namespace
             EndDisabled();
 
             if (!item.plain && readable) {
-                SeparatorText("Edit affixes");
-                for (int i = 0; i < static_cast<int>(item.view.rolled.affixes.size()); ++i) {
-                    const auto& rolled = item.view.rolled.affixes[static_cast<std::size_t>(i)];
-                    if (!rolled.affix) {
-                        continue;
+                const bool corrupted = item.view.rolled.corrupted;
+                const auto editRow = [&](const roll::RolledAffix& a_rolled, int a_i, bool a_canRemove) {
+                    if (!a_rolled.affix) {
+                        return;
                     }
-                    const std::string id = rolled.affix->id;
-                    PushID(i);
-                    BeginDisabled(!s_confirm);
-                    if (Button("Remove")) {
-                        s_confirm = false;
-                        RunOnGameThread([target, id]() {
-                            AfterAction(target, Crafting::RemoveAffix(target, id), "Remove " + id);
-                        });
+                    const std::string id = a_rolled.affix->id;
+                    PushID(a_i);
+                    BeginDisabled(!s_confirm || corrupted);
+                    if (a_canRemove) {
+                        if (Button("Remove")) {
+                            s_confirm = false;
+                            RunOnGameThread([target, id]() {
+                                AfterAction(target, Crafting::RemoveAffix(target, id), "Remove " + id);
+                            });
+                        }
+                        SameLine();
                     }
-                    SameLine();
                     if (Button("Reroll value")) {
                         s_confirm = false;
                         RunOnGameThread([target, id]() {
@@ -601,9 +637,52 @@ namespace
                     }
                     EndDisabled();
                     SameLine();
-                    Text("%s %s  tier %d  %.2f", roll::KindName(rolled.affix->kind),
-                        rolled.affix->name.c_str(), rolled.tier, rolled.value);
+                    Text("%s %s  tier %d  %.2f", roll::KindName(a_rolled.affix->kind),
+                        a_rolled.affix->name.c_str(), a_rolled.tier, a_rolled.value);
                     PopID();
+                };
+
+                SeparatorText("Implicits");
+                int shown = 0;
+                for (int i = 0; i < static_cast<int>(item.view.rolled.affixes.size()); ++i) {
+                    const auto& rolled = item.view.rolled.affixes[static_cast<std::size_t>(i)];
+                    if (rolled.affix && rolled.affix->Implicit()) {
+                        editRow(rolled, i, false);
+                        ++shown;
+                    }
+                }
+                if (shown == 0) {
+                    TextDisabled("None yet (a 1.2.0 item gets one the first time it is hovered).");
+                }
+                BeginDisabled(!s_confirm || corrupted || item.view.rolled.Implicits() != 1);
+                if (Button("Vaal-add implicit (corrupts; no-op if none is valid)")) {
+                    s_confirm = false;
+                    RunOnGameThread([target]() {
+                        AfterAction(target, Crafting::AddSecondImplicit(target), "Vaal-add implicit");
+                    });
+                }
+                EndDisabled();
+
+                SeparatorText("Corrupted lock");
+                bool lock = corrupted;
+                BeginDisabled(!s_confirm);
+                if (Checkbox("Corrupted (no orb, Divine or Scouring works; no rerolls)", &lock)) {
+                    s_confirm = false;
+                    RunOnGameThread([target, lock]() {
+                        AfterAction(target, Crafting::SetCorrupted(target, lock), lock ? "Corrupt" : "Uncorrupt");
+                    });
+                }
+                EndDisabled();
+
+                SeparatorText("Edit mods");
+                if (corrupted) {
+                    TextColored(kBad, "Corrupted: edits are locked.");
+                }
+                for (int i = 0; i < static_cast<int>(item.view.rolled.affixes.size()); ++i) {
+                    const auto& rolled = item.view.rolled.affixes[static_cast<std::size_t>(i)];
+                    if (rolled.affix && !rolled.affix->Implicit()) {
+                        editRow(rolled, i, true);
+                    }
                 }
             }
         } else if (items.empty()) {
@@ -619,22 +698,19 @@ namespace
                 std::snprintf(s_base, sizeof(s_base), "%s", text.c_str());
             }
         }
-        std::array<const char*, roll::kBandCount> bandNames{};
-        for (int b = 0; b < roll::kBandCount; ++b) {
-            bandNames[static_cast<std::size_t>(b)] = roll::BandName(static_cast<roll::Band>(b));
-        }
-        Combo("Colour", &s_band, bandNames.data(), roll::kBandCount);
+        static constexpr const char* kSpawnRarity[]{ "normal", "magic", "rare" };
+        Combo("Rarity", &s_rarity, kSpawnRarity, 3);
         SliderInt("Item level##spawn", &s_level, 1, 80);
-        TextDisabled("Red needs item level 35. The item appears on the ground; pick it up as usual.");
+        TextDisabled("Every rarity carries its base implicit. The item appears on the ground.");
 
         BeginDisabled(!s_confirm);
         if (Button("Spawn")) {
             s_confirm = false;
             const auto base = static_cast<RE::FormID>(std::strtoul(s_base, nullptr, 16));
-            const int  band = s_band;
+            const int  rarity = s_rarity;
             const int  level = s_level;
-            RunOnGameThread([base, band, level]() {
-                const auto outcome = Crafting::SpawnAtFeet(base, band, level);
+            RunOnGameThread([base, rarity, level]() {
+                const auto outcome = Crafting::SpawnAtFeet(base, rarity, level);
                 std::scoped_lock lock{ g_lock };
                 g_forgeReport = std::format("Spawn: {}{}", outcome.ok ? "" : "refused -- ",
                     outcome.message);
@@ -714,7 +790,7 @@ namespace
 
         SeparatorText("What the co-save holds");
         Text("Rolled actors and containers: %zu", Persist::RolledCount());
-        Text("Enchantment bands:            %zu", Persist::EnchTierCount());
+        Text("Rarity codes (by enchantment): %zu", Persist::EnchTierCount());
         Text("Affix enchantments (ours):    %zu", Persist::AffixEnchCount());
         Text("Item records:                 %zu", Persist::ItemRecordCount());
         Text("Vendor restock days:          %zu", Persist::VendorDayCount());
@@ -723,8 +799,8 @@ namespace
         Text("Records rebuilt from old items this session: %llu  (could not be read: %llu)",
             static_cast<unsigned long long>(records.reconstructed),
             static_cast<unsigned long long>(records.unreadable));
-        TextDisabled("Item records can be fewer than bands: an older item gets its record the first\n"
-                     "time its tooltip is shown or it is inspected here.");
+        TextDisabled("Rarity codes are recomputed for 1.2.0 items the first time they are drawn;\n"
+                     "an older item gets its record the first time its tooltip is shown.");
 
         SeparatorText("Orphaned enchantments");
         if (Button("Check")) {
@@ -830,7 +906,7 @@ namespace
         }
 
         if (!Orbs::Available()) {
-            TextColored(BandColour(5), "DiabloInSkyrim.esp is not loaded: no orbs exist.");
+            TextColored(kBad, "DiabloInSkyrim.esp is not loaded: no orbs exist.");
         }
 
         SeparatorText("Spawn orbs");
@@ -850,6 +926,45 @@ namespace
         }
         EndDisabled();
         TextDisabled("Arrives on the next game frame, which is when this menu closes.");
+
+        SeparatorText("Drop quantity by difficulty");
+        {
+            static bool  s_auto = true;
+            static float s_override = 1.0f;
+            static bool  s_multLoaded = false;
+            if (!s_multLoaded || !s_loaded) {
+                s_auto = Config::DropMultiplierAuto();
+                s_override = Config::DropMultiplierOverride();
+                s_multLoaded = true;
+            }
+            static constexpr const char* kDifficulty[]{ "Novice", "Apprentice", "Adept", "Expert", "Master",
+                "Legendary" };
+            const int difficulty = std::clamp(Orbs::LastDifficulty(), 0, 5);
+            Text("Active multiplier: x%.2f   Source: %s", Orbs::PreviewDropMultiplier(),
+                Config::DropMultiplierAuto()
+                    ? std::format("Auto ({}, +{:.2f} per level)", kDifficulty[difficulty],
+                          Config::DropQuantityPerDifficulty()).c_str()
+                    : "Override");
+            Text("Last kill used x%.2f", Orbs::LastDropMultiplier());
+            bool multChanged = Checkbox("Auto (follow the game's difficulty)", &s_auto);
+            BeginDisabled(s_auto);
+            multChanged |= SliderFloat("Override multiplier", &s_override, 1.0f, 3.0f, "%.2f");
+            EndDisabled();
+            if (multChanged) {
+                const bool  autoMode = s_auto;
+                const float value = s_override;
+                RunOnGameThread([autoMode, value]() {
+                    Config::SetDropMultiplierAuto(autoMode);
+                    Config::SetDropMultiplierOverride(value);
+                    Orbs::RefreshDifficulty();
+                });
+            }
+            if (Button("Re-read difficulty")) {
+                RunOnGameThread([]() { Orbs::RefreshDifficulty(); });
+            }
+            SameLine();
+            TextDisabled("Orb counts only; gold and gear are unchanged. Save/Reset below include it.");
+        }
 
         SeparatorText("Drops (live)");
         bool changed = false;
@@ -942,6 +1057,18 @@ namespace
         SeparatorText("ARPG POV (required)");
         StatusLine("ARPGPOV.dll", ::GetModuleHandleW(L"ARPGPOV.dll") != nullptr, "loaded",
             "NOT LOADED -- POErim is built to be played with ARPG POV");
+        StatusLine("Using DiabloLootAPI v2 (rarity colours)", LootApi::V2Calls() > 0,
+            std::format("yes ({} calls)", LootApi::V2Calls()).c_str(), "no calls yet");
+        {
+            std::uint32_t base = 0;
+            std::uint32_t rgba = 0;
+            if (LootApi::LastAnswer(base, rgba)) {
+                auto* object = RE::TESForm::LookupByID<RE::TESBoundObject>(base);
+                Text("Last colour handed over:");
+                SameLine();
+                TextColored(FromRgba(rgba), "%08X  %s", rgba, object && object->GetName() ? object->GetName() : "");
+            }
+        }
 
         SeparatorText("Grid Inventory");
         const bool grid = ::GetModuleHandleW(L"GridInventory.dll") != nullptr;
@@ -950,9 +1077,46 @@ namespace
         StatusLine("Tint table delivered", GridTint::Registered(), "yes", "no");
         StatusLine("Orb applier delivered", GridTint::ApplierDelivered(), "yes",
             "no -- orbs can't be used from the grid (needs the POErim Grid Inventory build)");
+        StatusLine("Currency pouch", GridTint::PouchActive(), "active",
+            GridTint::GridReportSeen() ? "off (GridInventory_ui.ini [CurrencyPouch])" : "unknown (no report from the grid yet)");
+
         SeparatorText("Orbs");
         StatusLine("DiabloInSkyrim.esp orbs", Orbs::Available(), "all found",
             "MISSING -- enable DiabloInSkyrim.esp");
+        if (BeginTable("orbs", 4)) {
+            TableSetupColumn("Orb");
+            TableSetupColumn("Model path");
+            TableSetupColumn("Grid size");
+            TableSetupColumn("Icon source");
+            TableHeadersRow();
+            for (int i = 0; i < roll::kOrbCount; ++i) {
+                const auto orb = static_cast<roll::Orb>(i);
+                auto*      form = Orbs::Form(orb);
+                TableNextRow();
+                TableNextColumn();
+                Text("%s", roll::OrbName(orb));
+                TableNextColumn();
+                const auto model = Orbs::ModelOf(orb);
+                TextColored(Orbs::IsGemMesh(model) ? kGood : kBad, "%s", model.empty() ? "(none)" : model.c_str());
+                GridTint::CurrencyRow row{};
+                const bool known = form && GridTint::GridCurrencyRow(form->GetFormID(), row);
+                TableNextColumn();
+                if (known) {
+                    TextColored(row.w == 1 && row.h == 1 ? kGood : kBad, "%ux%u", row.w, row.h);
+                } else {
+                    TextColored(kBad, "? (grid has not reported)");
+                }
+                TableNextColumn();
+                static constexpr const char* kSources[]{ "none", "PNG", "3D capture", "category drawing" };
+                if (known) {
+                    TextColored(row.iconSource == 1 ? kGood : kBad, "%s", kSources[std::min<int>(row.iconSource, 3)]);
+                } else {
+                    TextColored(kBad, "?");
+                }
+            }
+            EndTable();
+        }
+        TextDisabled("Red: not a vanilla gem mesh, not 1x1, or not its own PNG.");
         TextDisabled("Delivered means the message arrived. Whether each table was accepted -- tint,\n"
                      "tooltip, price, sockets -- is in Grid Inventory's own log.");
 
@@ -964,6 +1128,43 @@ namespace
             Text("%zu affixes, %zu tier rows", table->Affixes().size(), table->TierRowCount());
         }
         StatusLine("Distribution", Distribute::Enabled(), "on", "off (Distribution=0 in DiabloLoot.ini)");
+        StatusLine("Replace vanilla enchantments", Config::ReplaceVanillaEnchants(), "on", "off");
+
+        SeparatorText("Affix table");
+        static std::string s_reload;
+        if (Button("Reload the CSVs now")) {
+            RunOnGameThread([]() {
+                std::string report;
+                ReloadAffixTable(report);
+                DebugMenu::Forget();
+                std::scoped_lock lock{ g_lock };
+                s_reload = std::move(report);
+            });
+        }
+        SameLine();
+        TextDisabled("Takes the table lock; items already made keep their enchantments.");
+        {
+            std::scoped_lock lock{ g_lock };
+            if (!s_reload.empty()) {
+                TextWrapped("%s", s_reload.c_str());
+            }
+        }
+
+        SeparatorText("Vanilla enchantments that will be replaced");
+        static std::string s_vanilla;
+        if (Button("List them (writes the log)")) {
+            RunOnGameThread([]() {
+                std::string report = ListReplaceableEnchantments();
+                std::scoped_lock lock{ g_lock };
+                s_vanilla = std::move(report);
+            });
+        }
+        {
+            std::scoped_lock lock{ g_lock };
+            if (!s_vanilla.empty()) {
+                TextWrapped("%s", s_vanilla.c_str());
+            }
+        }
     }
 }
 

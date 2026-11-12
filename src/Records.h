@@ -26,6 +26,8 @@
 #include "roll/Record.h"
 #include "roll/Roll.h"
 
+#include <shared_mutex>
+
 namespace Records
 {
     // Borrowed; must outlive the session. Call at kDataLoaded, after
@@ -42,7 +44,7 @@ namespace Records
     struct View
     {
         RE::FormID       enchantment{ 0 };
-        std::uint8_t     band{ 0 };        // roll::Band, from the co-save
+        std::uint8_t     code{ 0 };        // roll::RarityCode, from the co-save (0 = not yet drawn)
         roll::ItemRecord record;
         roll::RolledItem rolled;           // the record against the table as loaded now
         bool             complete{ false };  // every affix in the record still resolves
@@ -54,6 +56,19 @@ namespace Records
     // lock, nothing more -- it is called from the grid's tooltip.
     bool Lookup(const RE::ExtraDataList* a_xList, View& a_out);
     bool Lookup(const RE::EnchantmentItem* a_enchantment, View& a_out);
+
+    // The rarity code for an enchantment, computing and storing it on a miss.
+    // 0 for anything that is not ours. Any thread; the hot path only pays the
+    // computation once per enchantment.
+    [[nodiscard]] std::uint8_t CodeFor(const RE::EnchantmentItem* a_enchantment);
+
+    // ★THE TABLE LOCK (2.1.0, for reloading the CSV without a restart).
+    // Everything that holds a roll::RolledItem -- whose affixes point INTO the
+    // table -- holds a shared lock for as long as it does; ReloadTable takes
+    // it exclusively, swaps the contents and resolves the effects again.
+    // RolledItems must not outlive the lock they were made under.
+    [[nodiscard]] std::shared_mutex& TableLock();
+    using ReadGuard = std::shared_lock<std::shared_mutex>;
 
     // Drops the "could not be read" memo. Call wherever Sockets::Forget is
     // called: created-object ids are handed out again by the next save.

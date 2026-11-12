@@ -54,7 +54,7 @@ namespace Crafting
         bool         ok{ false };
         std::string  message;            // what happened, or why nothing did
         RE::FormID   enchantment{ 0 };   // the item's enchantment afterwards; 0 when plain
-        std::uint8_t band{ 0 };
+        std::uint8_t code{ 0 };          // roll::RarityCode afterwards
     };
 
     // Uses an orb on the item. Nothing is consumed: this is the craft itself,
@@ -66,8 +66,20 @@ namespace Crafting
     Outcome RerollValue(const Target& a_target, std::string_view a_affixId);
 
     // Places a new item of this base form at the player's feet, rolled until it
-    // lands in a_band (a roll::Band) at a_itemLevel. Band 0 places it plain.
-    Outcome SpawnAtFeet(RE::FormID a_base, int a_band, int a_itemLevel);
+    // lands in a_rarity (0 normal, 1 magic, 2 rare) at a_itemLevel. Every
+    // rarity carries its base implicit.
+    Outcome SpawnAtFeet(RE::FormID a_base, int a_rarity, int a_itemLevel);
+
+    // ★FIRST SIGHT (2.1.0). Gives the unit its base implicit: a plain generic
+    // item, a 1.2.0 item with no implicit (flagged so it is never redone), or
+    // a vanilla/player-enchanted generic item whose enchantment is replaced
+    // (ReplaceVanillaEnchants). Player's inventory only; game thread.
+    Outcome GrantBaseImplicit(const Target& a_target);
+
+    // Debug: the Vaal second-implicit outcome on its own (same rules, and it
+    // corrupts), and the corrupted flag by hand.
+    Outcome AddSecondImplicit(const Target& a_target);
+    Outcome SetCorrupted(const Target& a_target, bool a_corrupted);
 
     // Whether this base form is something an orb could ever be used on, and a
     // short reason when it is not. Reads form data only: any thread.

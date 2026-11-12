@@ -6,7 +6,9 @@
 
 #include "GridTint.h"
 
+#include "Apply.h"
 #include "Config.h"
+#include "Crafting.h"
 #include "Orbs.h"
 #include "Persist.h"
 #include "Records.h"
@@ -20,6 +22,8 @@
 #include <cstring>
 #include <format>
 #include <iterator>
+#include <mutex>
+#include <set>
 #include <string>
 #include <string_view>
 
@@ -42,42 +46,60 @@ namespace
                (std::uint32_t{ a_g } << 8) | std::uint32_t{ a_r };
     }
 
-    // The five bands, in the order roll::Band declares them. White is absent on
-    // purpose: a band-0 item is an ordinary item and must look like one, so the
-    // tier query answers 0 for it and the host draws what it always drew.
-    //
-    // These are the affix bands, not a copy of the host's own rarity colours.
-    // Blue is deliberately close to the grid's "enchanted" blue -- a band-1 item
-    // IS the least interesting enchanted thing on the board, and having it read
-    // as a slightly brighter version of the colour it would have had anyway is
-    // the honest presentation.
-    //
-    // Red sits a step past orange in hue and a step down in brightness, so the
-    // two read as neighbours on one scale rather than as unrelated colours --
-    // and so it is not the pure red the host uses for damage and warnings.
-    constexpr std::uint32_t kPalette[]{
-        Rgba(105, 155, 255),   // 1  blue     tiers 1-3
-        Rgba(240, 215, 100),   // 2  yellow   tiers 4-6
-        Rgba(185, 120, 240),   // 3  purple   tiers 7-9
-        Rgba(255, 140, 60),    // 4  orange   tiers 10-12
-        Rgba(230, 60, 70),     // 5  red      tiers 13-15
+    // ★TINT TIERS (2.1.0): rarity, not the point band. Normal is a tier of its
+    // own and NOT "no opinion": since every item carries its base implicit, a
+    // normal item has an enchantment, and the host would otherwise draw it in
+    // its enchanted blue. Colours come from DiabloLoot.ini [Rarity].
+    enum TintTier : std::uint8_t
+    {
+        kTintNone = 0,
+        kTintNormal = 1,
+        kTintMagic = 2,
+        kTintRare = 3,
+        kTintCorrupted = 4,
+        kTintCurrency = 5,
+        kTintCount = 5
     };
+    static_assert(kTintCount <= GridInvAPI::kMaxTintTier, "the ABI cannot carry this many tiers");
+
+    std::uint32_t TierColour(std::uint8_t a_tier)
+    {
+        switch (a_tier) {
+        case kTintNormal:    return Config::RarityColor(Config::RarityColour::kNormal);
+        case kTintMagic:     return Config::RarityColor(Config::RarityColour::kMagic);
+        case kTintRare:      return Config::RarityColor(Config::RarityColour::kRare);
+        case kTintCorrupted: return Config::RarityColor(Config::RarityColour::kCorrupted);
+        case kTintCurrency:  return Config::RarityColor(Config::RarityColour::kCurrency);
+        default:             return 0u;
+        }
+    }
+
+    std::uint8_t TierOfCode(std::uint8_t a_code)
+    {
+        if (a_code == 0) {
+            return kTintNone;
+        }
+        if (roll::CorruptedFromCode(a_code)) {
+            return kTintCorrupted;   // ★red overrides the rarity colour
+        }
+        switch (roll::RarityFromCode(a_code)) {
+        case roll::Rarity::kNormal: return kTintNormal;
+        case roll::Rarity::kMagic:  return kTintMagic;
+        case roll::Rarity::kRare:   return kTintRare;
+        default:                    return kTintNone;
+        }
+    }
+
     // The detail view's headings: a quiet grey, so the affixes stay the loud part.
     constexpr std::uint32_t kHeadingColour = Rgba(150, 150, 150);
 
-    static_assert(std::size(kPalette) <= GridInvAPI::kMaxTintTier,
-                  "the ABI cannot carry this many bands");
-    static_assert(std::size(kPalette) == static_cast<std::size_t>(roll::kBandCount) - 1,
-                  "one colour per non-white band, in roll::Band order");
-
     // ---- the tables the host calls ---------------------------------------
 
-    // The band of one unit, 0 when this mod did not roll it.
+    // The rarity code of one unit, 0 when this mod did not roll it.
     //
-    // SHARED BY BOTH HOOKS, and that sharing is the point rather than a tidy-up:
-    // the tint and the tooltip line must never disagree about an item, and the
-    // surest way to guarantee that is for there to be one answer.
-    std::uint8_t BandOf(const void* a_xl)
+    // SHARED BY EVERY HOOK, and that sharing is the point: the tint, the
+    // tooltip and the price must never disagree about an item.
+    std::uint8_t CodeOf(const void* a_xl)
     {
         // No list of its own means a plain unit -- nothing this mod has touched,
         // because attaching an affix is exactly what creates one.
@@ -89,27 +111,77 @@ namespace
         if (!xe || !xe->enchantment) {
             return 0;
         }
-
-        // THE ENCHANTMENT IS THE KEY, not the base form and not the list.
-        //
-        // The base form is shared by every iron sword in Skyrim, and the list
-        // pointer is rewritten by the engine on every container move. The
-        // created enchantment is the one thing that belongs to this instance
-        // and survives being carried, looted, stored and reloaded -- which is
-        // why the tier is recorded against it and travels in the co-save.
-        //
-        // A vanilla-enchanted item reaches here too (the host asks about every
-        // tile) and answers 0: we never rolled it, so its FormID is not in the
-        // map and it keeps the host's own enchanted blue.
-        return Persist::EnchTier(xe->enchantment->GetFormID());
+        // THE ENCHANTMENT IS THE KEY, not the base form and not the list: the
+        // one thing that belongs to this instance and survives being carried,
+        // looted, stored and reloaded. A miss on ours is computed once from
+        // the item record (Records::CodeFor); a vanilla one answers 0.
+        return Records::CodeFor(xe->enchantment);
     }
 
     // HOT PATH. Once per visible tile per frame, again per equipment-doll slot,
-    // and again while a tooltip is built. One extra-data walk and one hash
-    // lookup, and it must stay that way: no form lookup, no allocation.
-    std::uint8_t GetTier(void*, std::uint32_t, const void* a_xl)
+    // and again while a tooltip is built. A hash lookup after the first ask.
+    std::uint8_t GetTier(void*, std::uint32_t a_base, const void* a_xl)
     {
-        return BandOf(a_xl);
+        if (Orbs::OrbOf(a_base) >= 0) {
+            return kTintCurrency;
+        }
+        return TierOfCode(CodeOf(a_xl));
+    }
+
+    // ---- first sight ------------------------------------------------------
+    //
+    // ★A UNIT THE PLAYER LOOKS AT gets its base implicit (Crafting::
+    // GrantBaseImplicit): a plain generic weapon or armour, a 1.2.0 item with
+    // none, or a vanilla/player-enchanted generic one (ReplaceVanillaEnchants).
+    // The tooltip only QUEUES it, once per unit per session; the change runs
+    // on the game thread, one task each. Items that are not in the player's
+    // inventory are left alone (FindUnit finds nothing).
+    std::mutex                                          g_sightLock;
+    std::set<std::pair<std::uint32_t, std::uint32_t>>   g_sightAsked;
+
+    // Off for lines asked through DiabloLootAPI: a GROUND item's hover must
+    // never change some other unit in the player's pack.
+    thread_local bool t_noFirstSight = false;
+
+    void QueueFirstSight(std::uint32_t a_base, std::uint32_t a_enchantment)
+    {
+        if (t_noFirstSight) {
+            return;
+        }
+        {
+            std::scoped_lock lock{ g_sightLock };
+            if (!g_sightAsked.emplace(a_base, a_enchantment).second) {
+                return;
+            }
+        }
+        SKSE::GetTaskInterface()->AddTask([a_base, a_enchantment]() {
+            const auto outcome = Crafting::GrantBaseImplicit({ a_base, a_enchantment });
+            if (outcome.ok) {
+                logger::info("first sight[{:08X}]: {}", a_base, outcome.message);
+            }
+        });
+    }
+
+    bool WantsFirstSight(std::uint32_t a_base, const RE::ExtraDataList* a_xl)
+    {
+        auto* object = RE::TESForm::LookupByID<RE::TESBoundObject>(a_base);
+        if (!object || (!object->Is(RE::FormType::Weapon) && !object->Is(RE::FormType::Armor)) ||
+            Apply::SlotsOf(object) == roll::kNone) {
+            return false;
+        }
+        const auto kind = Apply::ClassifyEnchanted(object, a_xl);
+        if (kind == Apply::VanillaKind::kRefused) {
+            return false;
+        }
+        // ★THE PLAYER'S OWN ENCHANTING is replaced only when they use an orb
+        // on it, never by a hover: they paid for it a moment ago.
+        if (kind == Apply::VanillaKind::kInstanceEnchanted) {
+            return false;
+        }
+        if (kind != Apply::VanillaKind::kNone) {
+            return Config::ReplaceVanillaEnchants();
+        }
+        return Apply::IsGeneric(object) && Apply::IsEligible(object, const_cast<RE::ExtraDataList*>(a_xl));
     }
 
     // The item the grid last built a tooltip for, as ids rather than pointers:
@@ -201,23 +273,24 @@ namespace
     //   the affixes   one line each, in the band's colour. With the detail key
     //                 held (Alt by default) each also shows its tier and the
     //                 range that tier rolls -- how good THIS roll is.
-    // What an orb does, on the orb's own tooltip.
+    // What an orb does, on the orb's own tooltip. PoE1 rules (2.1.0).
     std::uint32_t OrbLines(roll::Orb a_orb, GridInvAPI::TooltipLine* a_out, std::uint32_t a_capacity)
     {
         const char* what = "";
         switch (a_orb) {
-        case roll::Orb::kTransmute: what = "Adds one affix to a plain item"; break;
-        case roll::Orb::kAugment:   what = "Adds a second affix to an item with one"; break;
-        case roll::Orb::kAlchemy:   what = "Adds four affixes to a plain item"; break;
-        case roll::Orb::kExalt:     what = "Adds one affix to an item with two to five"; break;
-        case roll::Orb::kChaos:     what = "Rerolls every affix, keeping the count"; break;
-        case roll::Orb::kScour:     what = "Removes every affix"; break;
-        case roll::Orb::kDivine:    what = "Rerolls the values of every affix"; break;
+        case roll::Orb::kTransmute: what = "Turns a normal item magic, with 1 mod"; break;
+        case roll::Orb::kAugment:   what = "Adds a second mod to a magic item with 1"; break;
+        case roll::Orb::kRegal:     what = "Turns a magic item with 2 mods rare, adding a third"; break;
+        case roll::Orb::kAlchemy:   what = "Turns a normal item rare, with 4 mods"; break;
+        case roll::Orb::kExalt:     what = "Adds a mod to a rare item (up to 6)"; break;
+        case roll::Orb::kChaos:     what = "Rerolls a rare item's mods, keeping the count"; break;
+        case roll::Orb::kScour:     what = "Removes every mod; implicits stay"; break;
+        case roll::Orb::kDivine:    what = "Rerolls the values of every mod and implicit"; break;
         case roll::Orb::kVaal:      what = "Corrupts an item, with unpredictable results"; break;
         }
         std::uint32_t n = 0;
         if (n < a_capacity) {
-            PutLine(a_out[n++], what, Orbs::Color(a_orb));
+            PutLine(a_out[n++], what, Config::RarityColor(Config::RarityColour::kCurrency));
         }
         if (n < a_capacity) {
             PutLine(a_out[n++], "Right-click, then click an item to use. Shift keeps it.",
@@ -283,19 +356,29 @@ namespace
         if (const int orb = Orbs::OrbOf(a_base); orb >= 0) {
             return OrbLines(static_cast<roll::Orb>(orb), a_out, a_capacity);
         }
-        const std::uint8_t band = BandOf(a_xl);
-        if (band == 0) {
+        const auto* list = static_cast<const RE::ExtraDataList*>(a_xl);
+        const auto* xe = list ? list->GetByType<RE::ExtraEnchantment>() : nullptr;
+        const bool  ours = xe && xe->enchantment && Persist::IsAffixEnch(xe->enchantment->GetFormID());
+        if (!ours) {
+            // Not ours yet: a plain generic item or a replaceable vanilla one
+            // gets its base implicit now (queued, game thread).
+            if (WantsFirstSight(a_base, list)) {
+                QueueFirstSight(a_base, (xe && xe->enchantment) ? xe->enchantment->GetFormID() : 0u);
+            }
             return 0;
         }
-        // The band's own colour, so the lines and the name they sit under are
-        // plainly the same statement. Falls back to the host's body colour if a
-        // band ever outruns the palette.
-        const std::uint32_t colour = (band <= std::size(kPalette)) ? kPalette[band - 1] : 0u;
+        const std::uint8_t code = CodeOf(a_xl);
+        if (code == 0) {
+            return 0;
+        }
+        const std::uint32_t colour = TierColour(TierOfCode(code));
+        const auto          rarity = roll::RarityFromCode(code);
 
-        std::uint32_t n = 0;
+        const Records::ReadGuard guard{ Records::TableLock() };
+        std::uint32_t            n = 0;
 
         if (!roll::TierMarkInName()) {
-            if (const std::string mark = roll::BandMark(static_cast<roll::Band>(band)); !mark.empty()) {
+            if (const std::string mark = roll::RarityMark(rarity); !mark.empty()) {
                 PutLine(a_out[n], mark, colour);
                 ++n;
             }
@@ -303,81 +386,85 @@ namespace
 
         const bool wantLevel = Config::TooltipItemLevel();
         const bool wantAffixes = Config::TooltipAffixLines();
-        if (!wantLevel && !wantAffixes) {
-            return n;
-        }
 
         Records::View view;
-        if (!Records::Lookup(static_cast<const RE::ExtraDataList*>(a_xl), view)) {
+        if (!Records::Lookup(list, view)) {
             return n;   // the player's own merge, or an item the table can no longer read
         }
         g_hoverBase.store(a_base);
         g_hoverEnch.store(view.enchantment);
+        // A 1.2.0 item with no implicit gets its base one on first sight.
+        if (view.rolled.Implicits() == 0 && (view.record.flags & roll::kRecordImplicitGranted) == 0) {
+            QueueFirstSight(a_base, view.enchantment);
+        }
 
         if (wantLevel && n < a_capacity) {
             const bool estimated = (view.record.flags & roll::kRecordLegacy) != 0;
-            const bool rule = n > 0;   // a rule under the marker, when there is one
             PutLine(a_out[n],
                 std::format("Item Level {}{}", view.record.itemLevel, estimated ? " (estimated)" : ""),
-                0u, 0, rule);
+                0u, 0, n > 0);
             ++n;
         }
         if (view.rolled.corrupted && n < a_capacity) {
-            PutLine(a_out[n], "Corrupted", Rgba(210, 40, 40));
+            PutLine(a_out[n], "Corrupted", Config::RarityColor(Config::RarityColour::kCorrupted));
             ++n;
         }
+        if (!wantAffixes) {
+            return n;
+        }
 
-        if (wantAffixes) {
-            // GetAsyncKeyState, not the game's input: this runs on the host's
-            // render thread, and all it needs is whether one key is down now.
-            const int  key = Config::TooltipDetailKey();
-            const bool detail = key > 0 && (::GetAsyncKeyState(key) & 0x8000) != 0;
+        // GetAsyncKeyState, not the game's input: this runs on the host's
+        // render thread, and all it needs is whether one key is down now.
+        const int  key = Config::TooltipDetailKey();
+        const bool detail = key > 0 && (::GetAsyncKeyState(key) & 0x8000) != 0;
 
-            // ★PATH OF EXILE'S LAYOUT. The implicit sits on its own above a
-            // rule -- it belongs to the base -- and the explicits follow,
-            // prefixes before suffixes. Holding the detail key adds what PoE's
-            // Alt adds: a heading per kind with how full it is, and each
-            // affix's tier and roll range.
-            const auto section = [&](roll::AffixKind a_kind, const char* a_heading, int a_cap,
-                                     bool& a_ruleNext) {
-                int have = 0;
-                for (const auto& rolled : view.rolled.affixes) {
-                    if (rolled.affix && rolled.affix->kind == a_kind) {
-                        ++have;
-                    }
+        // ★PATH OF EXILE'S LAYOUT. Implicits are HIDDEN in the normal tooltip
+        // (2.1.0) and shown only with the detail key held, under an "Implicit"
+        // heading in the item's colour, above a rule. The explicits follow,
+        // prefixes before suffixes; with the key held each kind gets a heading
+        // with how full it is, and each mod its tier and roll range.
+        const bool magic = rarity == roll::Rarity::kMagic;
+        const auto section = [&](roll::AffixKind a_kind, const char* a_heading, int a_cap,
+                                 std::uint32_t a_headingColour, bool& a_ruleNext) {
+            int have = 0;
+            for (const auto& rolled : view.rolled.affixes) {
+                if (rolled.affix && rolled.affix->kind == a_kind) {
+                    ++have;
                 }
-                if (have == 0 && !detail) {
+            }
+            if (have == 0 && !detail) {
+                return;
+            }
+            if (detail && n < a_capacity) {
+                const std::string heading = a_cap > 0 ? std::format("{} ({}/{})", a_heading, have, a_cap)
+                                                      : std::string{ a_heading };
+                PutLine(a_out[n], heading, a_headingColour, 0, a_ruleNext);
+                ++n;
+                a_ruleNext = false;
+            }
+            for (const auto& rolled : view.rolled.affixes) {
+                if (n >= a_capacity) {
                     return;
                 }
-                if (detail && n < a_capacity) {
-                    const std::string heading = a_cap > 0 ? std::format("{} ({}/{})", a_heading, have, a_cap)
-                                                          : std::string{ a_heading };
-                    PutLine(a_out[n], heading, kHeadingColour, 0, a_ruleNext);
-                    ++n;
-                    a_ruleNext = false;
+                if (!rolled.affix || rolled.affix->kind != a_kind) {
+                    continue;
                 }
-                for (const auto& rolled : view.rolled.affixes) {
-                    if (n >= a_capacity) {
-                        return;
-                    }
-                    if (!rolled.affix || rolled.affix->kind != a_kind) {
-                        continue;
-                    }
-                    PutLine(a_out[n], AffixLine(rolled, detail), colour,
-                        detail ? std::uint8_t{ 1 } : std::uint8_t{ 0 }, a_ruleNext);
-                    ++n;
-                    a_ruleNext = false;
-                }
-            };
-
-            bool rule = false;
-            if (view.rolled.HasImplicit()) {
-                section(roll::AffixKind::kImplicit, "Implicit", 0, rule);
-                rule = true;   // the rule PoE draws under the implicit
+                PutLine(a_out[n], AffixLine(rolled, detail), colour,
+                    detail ? std::uint8_t{ 1 } : std::uint8_t{ 0 }, a_ruleNext);
+                ++n;
+                a_ruleNext = false;
             }
-            section(roll::AffixKind::kPrefix, "Prefixes", roll::MaxPrefixes(), rule);
-            section(roll::AffixKind::kSuffix, "Suffixes", roll::MaxSuffixes(), rule);
+        };
+
+        bool rule = false;
+        if (detail && view.rolled.HasImplicit()) {
+            section(roll::AffixKind::kImplicit, "Implicit", 0, colour, rule);
+            rule = true;   // the rule PoE draws under the implicit
         }
+        section(roll::AffixKind::kPrefix, "Prefixes", magic ? roll::kMagicMaxPrefixes : roll::MaxPrefixes(),
+            kHeadingColour, rule);
+        section(roll::AffixKind::kSuffix, "Suffixes", magic ? roll::kMagicMaxSuffixes : roll::MaxSuffixes(),
+            kHeadingColour, rule);
         return n;
     }
 
@@ -395,9 +482,9 @@ namespace
     // of settings that were loaded once at startup.
     float GetMultiplier(void*, std::uint32_t, const void* a_xl, std::uint32_t a_side)
     {
-        const std::uint8_t band = BandOf(a_xl);
-        if (band == 0) {
-            return 1.0f;   // not ours, or white: the host prices it as it always did
+        const int step = roll::PowerStepFromCode(CodeOf(a_xl));
+        if (step == 0) {
+            return 1.0f;   // not ours, or no points: the host prices it as it always did
         }
         // The selling side is scaled only when the INI says so -- the same
         // default Pricing.h explains: what a merchant asks goes up, what a
@@ -405,7 +492,7 @@ namespace
         if (a_side == GridInvAPI::kPriceSell && !Config::SellPricesScaled()) {
             return 1.0f;
         }
-        const float mult = Config::PriceMult(static_cast<roll::Band>(band));
+        const float mult = Config::PriceMult(step);
         return mult > 0.0f ? mult : 1.0f;
     }
 
@@ -490,10 +577,9 @@ namespace
         if (!a_out) {
             return 0;
         }
-        const auto n = static_cast<std::uint32_t>(
-            (std::min)(static_cast<std::size_t>(a_capacity), std::size(kPalette)));
+        const auto n = (std::min)(a_capacity, static_cast<std::uint32_t>(kTintCount));
         for (std::uint32_t i = 0; i < n; ++i) {
-            a_out[i] = kPalette[i];
+            a_out[i] = TierColour(static_cast<std::uint8_t>(i + 1));
         }
         return n;
     }
@@ -606,18 +692,52 @@ namespace
         logger::info("grid tint: orb applier {}", sentApplier ? "delivered" : "not delivered");
 
         g_registered.store(sent);
-        logger::info("grid tint: offered {} band(s) to {} -- tint {}, tooltip {}, price {}, sockets {}",
-            std::size(kPalette), GridInvAPI::kHostPluginName,
+        logger::info("grid tint: offered {} rarity tier(s) to {} -- tint {}, tooltip {}, price {}, sockets {}",
+            static_cast<int>(kTintCount), GridInvAPI::kHostPluginName,
             sent ? "delivered" : "not delivered (is Grid Inventory installed?)",
             sentAnnot ? "delivered" : "not delivered",
             sentPrice ? "delivered" : "not delivered",
             sentSockets ? "delivered" : "not offered (no Socketing)");
     }
 
+    // The host's last currency report (kMsgCurrencyReport): what size and
+    // icon each orb really got, for the debug menu's Integration page.
+    std::mutex                   g_reportLock;
+    GridInvAPI::CurrencyReport   g_report{};
+    std::atomic<bool>            g_reportSeen{ false };
+
+    void OnCurrencyReport(const SKSE::MessagingInterface::Message* a_msg)
+    {
+        if (!a_msg->data || a_msg->dataLen < sizeof(GridInvAPI::CurrencyReport)) {
+            return;
+        }
+        const auto* report = static_cast<const GridInvAPI::CurrencyReport*>(a_msg->data);
+        if (report->structSize != sizeof(GridInvAPI::CurrencyReport) ||
+            report->abiVersion != GridInvAPI::kABIVersion) {
+            return;
+        }
+        std::scoped_lock lock{ g_reportLock };
+        g_report = *report;
+        g_report.count = (std::min)(g_report.count, GridInvAPI::kMaxCurrencyRows);
+        g_reportSeen.store(true);
+        for (std::uint32_t i = 0; i < g_report.count; ++i) {
+            const auto& row = g_report.rows[i];
+            if (row.w != 1 || row.h != 1 || row.iconSource != GridInvAPI::kCurrencyIconPng) {
+                logger::warn("grid report: currency {:08X} is {}x{} with icon source {} -- expected "
+                             "1x1 and its own PNG",
+                    row.base, row.w, row.h, row.iconSource);
+            }
+        }
+    }
+
     // Takes EVERY sender. Only Grid Inventory's own 4CC types may be acted on
     // here -- see the note in GridTint.h.
     void OnApiMessage(SKSE::MessagingInterface::Message* a_msg)
     {
+        if (a_msg && a_msg->type == GridInvAPI::kMsgCurrencyReport) {
+            OnCurrencyReport(a_msg);
+            return;
+        }
         if (!a_msg || a_msg->type != GridInvAPI::kMsgHostReady) {
             return;
         }
@@ -687,6 +807,43 @@ void GridTint::ForgetTooltipItem()
 {
     g_hoverBase.store(0);
     g_hoverEnch.store(0);
+    std::scoped_lock lock{ g_sightLock };
+    g_sightAsked.clear();
+}
+
+std::uint32_t GridTint::ColourFor(std::uint32_t a_base, const void* a_xl)
+{
+    return TierColour(GetTier(nullptr, a_base, a_xl));
+}
+
+std::uint8_t GridTint::CodeFor(const void* a_xl)
+{
+    return CodeOf(a_xl);
+}
+
+bool GridTint::GridReportSeen()
+{
+    return g_reportSeen.load();
+}
+
+bool GridTint::PouchActive()
+{
+    std::scoped_lock lock{ g_reportLock };
+    return g_reportSeen.load() && g_report.pouchActive != 0;
+}
+
+bool GridTint::GridCurrencyRow(std::uint32_t a_base, CurrencyRow& a_out)
+{
+    std::scoped_lock lock{ g_reportLock };
+    for (std::uint32_t i = 0; i < g_report.count; ++i) {
+        if (g_report.rows[i].base == a_base) {
+            a_out.w = g_report.rows[i].w;
+            a_out.h = g_report.rows[i].h;
+            a_out.iconSource = g_report.rows[i].iconSource;
+            return true;
+        }
+    }
+    return false;
 }
 
 bool GridTint::ApplierDelivered()
@@ -697,7 +854,10 @@ bool GridTint::ApplierDelivered()
 std::uint32_t GridTint::LinesFor(std::uint32_t a_base, const void* a_xl,
     GridInvAPI::TooltipLine* a_out, std::uint32_t a_capacity)
 {
-    return GetLines(nullptr, a_base, a_xl, a_out, a_capacity);
+    t_noFirstSight = true;
+    const auto n = GetLines(nullptr, a_base, a_xl, a_out, a_capacity);
+    t_noFirstSight = false;
+    return n;
 }
 
 std::uint32_t GridTint::PaletteFor(std::uint32_t* a_out, std::uint32_t a_capacity)

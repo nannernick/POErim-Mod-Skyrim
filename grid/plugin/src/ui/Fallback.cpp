@@ -1,4 +1,5 @@
 #include "ui/Fallback.h"
+#include "ui/CurrencyPouch.h"
 
 #include "game/GoldCoins.h"
 #include "ui/Grid.h"
@@ -1005,6 +1006,7 @@ namespace FUI::Fallback
     {
         if (!a_obj) return nullptr;
         if (const auto* mine = LookupItem(a_obj)) return mine;
+        if (CurrencyPouch::IsCurrency(a_obj)) return CurrencyPouch::IconOf(a_obj);
         const Resolved r = Resolve(a_obj);
         if (!r.base) return nullptr;
         if (!r.variant.empty()) {
@@ -1062,6 +1064,12 @@ namespace FUI::Fallback
         // time), so per-item tuning is still available — it is just not
         // inherited.
         if ((out.icon = LookupItem(a_obj))) return out;
+        // POErim 2.1.0: a currency with no PNG draws nothing, never a gem or a
+        // chest drawing (CurrencyPouch::IconOf has logged the miss).
+        if (CurrencyPouch::IsCurrency(a_obj)) {
+            (void)CurrencyPouch::IconOf(a_obj);
+            return out;
+        }
         const Resolved r = Resolve(a_obj);
         if (!r.base) return out;
         if (!r.variant.empty()) {

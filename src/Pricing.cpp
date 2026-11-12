@@ -26,7 +26,8 @@ namespace
             }
             const auto* xEnch = xList->GetByType<RE::ExtraEnchantment>();
             if (xEnch && xEnch->enchantment) {
-                return Persist::EnchTier(xEnch->enchantment->GetFormID());
+                return static_cast<std::uint8_t>(
+                    roll::PowerStepFromCode(Persist::EnchTier(xEnch->enchantment->GetFormID())));
             }
         }
         return 0;
@@ -58,7 +59,7 @@ namespace
         if (!Buying() && !Config::SellPricesScaled()) {
             return value;
         }
-        const float mult = Config::PriceMult(static_cast<roll::Band>(band));
+        const float mult = Config::PriceMult(band);   // the power step, 1..5
         if (mult <= 0.0f || mult == 1.0f) {
             return value;
         }

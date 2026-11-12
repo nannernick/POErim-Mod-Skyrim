@@ -89,4 +89,20 @@ namespace GridTint
     std::uint32_t LinesFor(std::uint32_t a_base, const void* a_xl, GridInvAPI::TooltipLine* a_out,
         std::uint32_t a_capacity);
     std::uint32_t PaletteFor(std::uint32_t* a_out, std::uint32_t a_capacity);
+
+    // The colour one unit draws in (rarity, corrupted red, currency gold), 0
+    // when it is none of ours; and its roll::RarityCode.
+    [[nodiscard]] std::uint32_t ColourFor(std::uint32_t a_base, const void* a_xl);
+    [[nodiscard]] std::uint8_t  CodeFor(const void* a_xl);
+
+    // From Grid Inventory's currency report (kMsgCurrencyReport).
+    struct CurrencyRow
+    {
+        unsigned w{ 0 };
+        unsigned h{ 0 };
+        int      iconSource{ 0 };   // GridInvAPI::CurrencyIcon
+    };
+    [[nodiscard]] bool GridReportSeen();
+    [[nodiscard]] bool PouchActive();
+    [[nodiscard]] bool GridCurrencyRow(std::uint32_t a_base, CurrencyRow& a_out);
 }

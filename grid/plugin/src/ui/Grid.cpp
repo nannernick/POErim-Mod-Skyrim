@@ -1,5 +1,6 @@
 ﻿#include "api/HostApi.h"
 #include "ui/Badges.h"
+#include "ui/CurrencyPouch.h"
 #include "ui/Editor.h"
 #include "ui/Equip.h"
 #include "ui/Fallback.h"
@@ -4839,6 +4840,10 @@ std::function<void(RE::TESBoundObject*, int, RE::ExtraDataList*)> g_dropWorld;
             // their mirror adds — the grid shows them regardless (value badge)
             const char* name = a_obj->GetName();
             if ((!name || !*name) && !GoldCoins::IsCoinForm(a_obj->GetFormID())) return true;
+            // POErim 2.1.0: the currency pouch shows these instead (its own
+            // window; the engine's inventory is untouched). Never in a shop or
+            // a container, where they must stay movable as tiles.
+            if (CurrencyPouch::HidesFromBoard(a_obj)) return true;
             // vanilla parity: NON-PLAYABLE forms never show in the vanilla UI
             // (mods keep hidden scripting copies in the inventory)
             if (!a_obj->GetPlayable()) return true;
@@ -13803,6 +13808,18 @@ std::function<void(RE::TESBoundObject*, int, RE::ExtraDataList*)> g_dropWorld;
             cdl->PopClipRect();
         }
         ImGui::EndChild();
+    }
+
+    void ArmCurrency(std::uint32_t a_base)
+    {
+        const auto* ap = HostApi::ApplierTable();
+        if (!ap || !ap->IsCurrency(ap->self, a_base) || g_held) return;
+        // The key names no tile, so no tile reads as "the armed one".
+        g_armed = Armed{ "#currencypouch", a_base };
+        g_armedClickUsed = true;
+        g_armedLastFrame = ImGui::GetFrameCount();
+        g_applyHover = ApplyHover{};
+        Sfx::SelectOn();
     }
 
     // G2: coin-pouch withdraw window — same construction as the settings /

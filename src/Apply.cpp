@@ -11,6 +11,7 @@
 
 #include <algorithm>
 #include <format>
+#include <shared_mutex>
 #include <unordered_map>
 #include <unordered_set>
 
@@ -24,6 +25,11 @@ namespace
     // Kept alongside rather than derived on demand -- it is asked once per
     // enchantment on the player's gear every time an enchanting table opens.
     std::unordered_set<const RE::EffectSetting*> g_effectSet;
+
+    // ★2.1.0: the two maps are rebuilt by a table RELOAD while the game runs,
+    // and read from the render thread (tooltips) and from equip events, not
+    // all of which hold the table lock. A lock of their own.
+    std::shared_mutex g_effectsLock;
 
     // "Skyrim.esm|0x07A0FF" -> the live form.
     //
@@ -125,8 +131,8 @@ namespace
             if (!rolled.affix) {
                 continue;
             }
-            const auto it = g_effects.find(rolled.affix->id);
-            const bool passive = it != g_effects.end() && Apply::IsWielderEffect(it->second);
+            const auto* effect = Apply::EffectFor(rolled.affix->id);
+            const bool  passive = effect && Apply::IsWielderEffect(effect);
             if (!passive) {
                 points += std::max(rolled.points, 0);
             }
@@ -168,7 +174,7 @@ namespace
         if (PerHitCost(a_rolled, a_object) <= 0) {
             return 0;
         }
-        return Config::WeaponChargeAmount(roll::BandOf(a_rolled.tier));
+        return Config::WeaponChargeAmount(roll::PowerStepOf(a_rolled.tier));
     }
 
     // Split out because there are now TWO places to hang it -- an ExtraDataList
@@ -211,13 +217,13 @@ namespace
             if (!rolled.affix) {
                 continue;
             }
-            const auto it = g_effects.find(rolled.affix->id);
-            if (it == g_effects.end()) {
+            auto* base = Apply::EffectFor(rolled.affix->id);
+            if (!base) {
                 continue;  // unresolvable token, already reported at load
             }
 
             auto& effect = effects.emplace_back();
-            effect.baseEffect = it->second;
+            effect.baseEffect = base;
             effect.effectItem.magnitude = rolled.value;
             // ★Duration and area come from the TABLE, not from zero. Phase 0
             // built every effect at duration 0 and Turn Undead rendered as "flee
@@ -348,8 +354,32 @@ std::size_t Apply::IndexLeveledItems()
         CollectLeveled(static_cast<RE::TESLeveledList*>(list), seen);
     }
 
-    logger::info("leveled index: {} weapon/armour record(s) reachable from {} list(s)",
-        g_generic.size(), lists);
+    // ★OUTFITS TOO (2.1.0). A guard's helmet, a soldier's cuirass: gear an
+    // NPC is DRESSED in and that no leveled list hands out. It is as generic
+    // as an Iron Sword -- every guard wears one -- and treating it as a unique
+    // left it uncraftable the moment it was plain (after Scouring, or white).
+    std::size_t outfits = 0;
+    for (auto* outfit : handler->GetFormArray<RE::BGSOutfit>()) {
+        if (!outfit) {
+            continue;
+        }
+        ++outfits;
+        for (auto* form : outfit->outfitItems) {
+            if (!form) {
+                continue;
+            }
+            if (auto* nested = form->As<RE::TESLevItem>()) {
+                if (seen.insert(nested->GetFormID()).second) {
+                    CollectLeveled(static_cast<RE::TESLeveledList*>(nested), seen);
+                }
+            } else if (form->Is(RE::FormType::Weapon) || form->Is(RE::FormType::Armor)) {
+                g_generic.insert(form->GetFormID());
+            }
+        }
+    }
+
+    logger::info("leveled index: {} weapon/armour record(s) reachable from {} list(s) and {} outfit(s)",
+        g_generic.size(), lists, outfits);
     if (g_generic.empty() && lists) {
         // Lists exist but nothing came out of them, which cannot be true of a
         // real load order -- so the walk is wrong, not the data.
@@ -463,6 +493,7 @@ namespace
 
 std::size_t Apply::ResolveEffects(roll::AffixTable& a_table)
 {
+    std::unique_lock effectsLock{ g_effectsLock };
     g_effects.clear();
     g_effectSet.clear();
 
@@ -535,12 +566,14 @@ std::size_t Apply::ResolveEffects(roll::AffixTable& a_table)
 
 bool Apply::IsAffixEffect(const RE::EffectSetting* a_effect)
 {
+    std::shared_lock lock{ g_effectsLock };
     return a_effect && g_effectSet.contains(a_effect);
 }
 
 RE::EffectSetting* Apply::EffectFor(std::string_view a_affixId)
 {
-    const auto it = g_effects.find(std::string{ a_affixId });
+    std::shared_lock lock{ g_effectsLock };
+    const auto       it = g_effects.find(std::string{ a_affixId });
     return it == g_effects.end() ? nullptr : it->second;
 }
 
@@ -641,6 +674,133 @@ bool Apply::IsEligible(RE::TESBoundObject* a_object, RE::ExtraDataList* a_xList)
     }
 
     return true;
+}
+
+RE::TESBoundObject* Apply::PlainTemplateOf(RE::TESBoundObject* a_object)
+{
+    if (!a_object) {
+        return nullptr;
+    }
+    if (auto* weapon = a_object->As<RE::TESObjectWEAP>()) {
+        auto* plain = weapon->templateWeapon;
+        return plain && !plain->formEnchanting ? plain : nullptr;
+    }
+    if (auto* armor = a_object->As<RE::TESObjectARMO>()) {
+        auto* plain = armor->templateArmor;
+        return plain && !plain->formEnchanting ? plain : nullptr;
+    }
+    return nullptr;
+}
+
+Apply::VanillaKind Apply::ClassifyEnchanted(RE::TESBoundObject* a_object, const RE::ExtraDataList* a_xList)
+{
+    if (!a_object || (!IsWeapon(a_object) && !a_object->As<RE::TESObjectARMO>())) {
+        return VanillaKind::kNone;
+    }
+    if (a_xList && a_xList->HasType(RE::ExtraDataType::kAliasInstanceArray)) {
+        return VanillaKind::kRefused;   // a quest item, whatever else it is
+    }
+    auto* enchantable = AsEnchantable(a_object);
+    if (enchantable && enchantable->formEnchanting) {
+        // ★THE THREE TESTS FOR "AN ORDINARY ENCHANTED VARIANT": it is generic
+        // (a leveled list or an outfit hands it out), it names a plain template
+        // (every generated "Iron Sword of Frost" points at "Iron Sword"; no
+        // artifact does), and the template is itself unenchanted.
+        if (IsGeneric(a_object) && PlainTemplateOf(a_object)) {
+            return VanillaKind::kRecordEnchanted;
+        }
+        return VanillaKind::kRefused;
+    }
+    if (a_xList) {
+        const auto* xEnch = a_xList->GetByType<RE::ExtraEnchantment>();
+        if (xEnch && xEnch->enchantment && !Persist::IsAffixEnch(xEnch->enchantment->GetFormID())) {
+            // ★A MERGE KEEPS ITS RARITY CODE (Enchanting.cpp): the player
+            // enchanted one of OUR items on top of its mods. Never replaced --
+            // that would delete the mods as well as the player's work.
+            if (Persist::EnchTier(xEnch->enchantment->GetFormID()) != 0) {
+                return VanillaKind::kRefused;
+            }
+            // The player's own enchanting (or a mod's). Generic bases only.
+            return IsGeneric(a_object) && xEnch->enchantment->IsDynamicForm()
+                       ? VanillaKind::kInstanceEnchanted
+                       : VanillaKind::kRefused;
+        }
+    }
+    return VanillaKind::kNone;
+}
+
+int Apply::SwapVanillaLoose(RE::TESObjectREFR* a_refr)
+{
+    if (!a_refr || a_refr->IsPlayerRef()) {
+        return 0;
+    }
+    // A COPY of the inventory (GetInventory), never the live entry list.
+    auto inventory = a_refr->GetInventory([](RE::TESBoundObject& a_object) {
+        return (a_object.Is(RE::FormType::Weapon) || a_object.Is(RE::FormType::Armor)) &&
+               PlainTemplateOf(&a_object) != nullptr;
+    });
+    int swapped = 0;
+    for (auto& [object, data] : inventory) {
+        if (!object || data.first <= 0 || ClassifyEnchanted(object, nullptr) != VanillaKind::kRecordEnchanted) {
+            continue;
+        }
+        // ★LOOSE UNITS ONLY. Anything with a list of its own -- worn, a quest
+        // alias, owned, tempered -- is left exactly as it is; it is replaced
+        // the first time the player looks at it in their own inventory.
+        int loose = data.first;
+        if (const auto& entry = data.second; entry && entry->extraLists) {
+            for (const auto* xList : *entry->extraLists) {
+                if (xList) {
+                    loose -= xList->GetCount();
+                }
+            }
+        }
+        if (loose <= 0) {
+            continue;
+        }
+        auto* plain = PlainTemplateOf(object);
+        a_refr->RemoveItem(object, loose, RE::ITEM_REMOVE_REASON::kRemove, nullptr, nullptr);
+        a_refr->AddObjectToContainer(plain, nullptr, loose, nullptr);
+        swapped += loose;
+    }
+    return swapped;
+}
+
+Apply::Applied Apply::Replace(const roll::RolledItem& a_rolled, RE::TESBoundObject* a_object,
+    RE::ExtraDataList* a_xList)
+{
+    Applied result;
+    if (!a_xList) {
+        return result;
+    }
+    // ★BUILT BEFORE ANYTHING IS LET GO (bug fix, 2.1.0). 1.2.0 released the old
+    // enchantment and then built the new one, and a build that failed left the
+    // item plain with its affixes gone. Now a failure leaves it exactly as it
+    // was. The engine dedupes effect sets, so the new one can be the old one:
+    // AddWeaponEnchantment has taken a reference, the release below drops the
+    // item's previous reference, and the count comes out right either way.
+    auto* ench = BuildEnchantment(a_rolled, a_object);
+    if (!ench) {
+        return result;
+    }
+    if (auto* xEnch = a_xList->GetByType<RE::ExtraEnchantment>(); xEnch && xEnch->enchantment) {
+        auto* old = xEnch->enchantment;
+        if (!old->IsDynamicForm()) {
+            if (auto* manager = RE::BGSCreatedObjectManager::GetSingleton()) {
+                manager->DestroyEnchantment(ench, IsWeapon(a_object));
+            }
+            logger::error("replace: {:08X} is not a created object; item left alone", old->GetFormID());
+            return result;
+        }
+        a_xList->RemoveByType(RE::ExtraDataType::kEnchantment);
+        a_xList->RemoveByType(RE::ExtraDataType::kTextDisplayData);
+        ReleaseCreated(old, IsWeapon(a_object));
+    }
+    a_xList->SetEnchantment(ench, StartingCharge(a_rolled, a_object), false);
+    Persist::NoteAffixEnch(ench->GetFormID());
+    result.enchantment = ench;
+    result.name = NameInstance(a_rolled, a_object, a_xList);
+    return result;
 }
 
 Apply::Applied Apply::ToItem(const roll::RolledItem& a_rolled, RE::TESBoundObject* a_object,

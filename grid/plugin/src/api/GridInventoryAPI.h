@@ -701,4 +701,46 @@ namespace GridInvAPI
                                 void* xl, char* reason, std::uint32_t capacity);
     };
     static_assert(sizeof(Applier) == 48, "Applier is part of the ABI");
+
+    // ---- host -> everyone: CURRENCY REPORT (POErim 2.1.0) ---------------------
+
+    // ★A SIGNAL, LIKE kMsgCostumeState: the host announces, nobody answers, no
+    // table, no registration, kABIVersion untouched. Sent after an applier
+    // registers and the host has resolved its currencies, and again whenever
+    // the currency pouch is turned on or off. A plugin that does not know the
+    // message never sees it.
+    //
+    // For each currency base form the applier claims: the footprint the host
+    // gives it, and where its icon comes from -- so a provider can show "is my
+    // orb 1x1 and drawn from its own PNG" without guessing.
+    inline constexpr std::uint32_t kMsgCurrencyReport = 0x47494352;  // 'GICR'
+    inline constexpr std::uint32_t kMaxCurrencyRows = 16;
+
+    enum CurrencyIcon : std::uint8_t
+    {
+        kCurrencyIconNone = 0,       // nothing loaded: the host logged a warning
+        kCurrencyIconPng = 1,        // GridInventory_fallback/item/<Plugin_0xID>.png
+        kCurrencyIconCapture = 2,    // a 3D capture (never for a currency since 2.1.0)
+        kCurrencyIconDrawn = 3,      // a category drawing (never for a currency since 2.1.0)
+    };
+
+    struct CurrencyRow
+    {
+        std::uint32_t base;
+        std::uint8_t  w;
+        std::uint8_t  h;
+        std::uint8_t  iconSource;   // CurrencyIcon
+        std::uint8_t  _pad;
+    };
+    static_assert(sizeof(CurrencyRow) == 8, "CurrencyRow is part of the ABI");
+
+    struct CurrencyReport
+    {
+        std::uint32_t structSize;   // = sizeof(CurrencyReport)
+        std::uint32_t abiVersion;   // = kABIVersion
+        std::uint32_t count;        // rows used, <= kMaxCurrencyRows
+        std::uint32_t pouchActive;  // non-zero: the currency pouch window is on
+        CurrencyRow   rows[kMaxCurrencyRows];
+    };
+    static_assert(sizeof(CurrencyReport) == 144, "CurrencyReport is part of the ABI");
 }

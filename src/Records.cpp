@@ -54,18 +54,29 @@ namespace
             // falls inside exactly one of their tier rows.
             const roll::Affix*     found = nullptr;
             const roll::AffixTier* foundTier = nullptr;
-            for (const auto& affix : a_table.Affixes()) {
-                // An item old enough to need this predates implicits, so an
-                // implicit row is never what one of its effects came from.
-                if (affix.Implicit()) {
-                    continue;
+            // Explicit rows first: an item old enough to need this mostly
+            // predates implicits. An implicit row is the fallback (a record
+            // lost from a 2.1.0 save still reads back).
+            for (const bool implicitPass : { false, true }) {
+                for (const auto& affix : a_table.Affixes()) {
+                    if (affix.Implicit() != implicitPass) {
+                        continue;
+                    }
+                    if (Apply::EffectFor(affix.id) != effect->baseEffect) {
+                        continue;
+                    }
+                    const bool taken = std::any_of(a_out.affixes.begin(), a_out.affixes.end(),
+                        [&](const roll::AffixRecord& a_have) { return a_have.id == affix.id; });
+                    if (taken) {
+                        continue;
+                    }
+                    if (const auto* tier = roll::MatchTier(affix, magnitude, duration, area)) {
+                        found = &affix;
+                        foundTier = tier;
+                        break;
+                    }
                 }
-                if (Apply::EffectFor(affix.id) != effect->baseEffect) {
-                    continue;
-                }
-                if (const auto* tier = roll::MatchTier(affix, magnitude, duration, area)) {
-                    found = &affix;
-                    foundTier = tier;
+                if (found) {
                     break;
                 }
             }
@@ -88,7 +99,13 @@ namespace
             minLevel = (std::max)(minLevel, foundTier->minItemLevel);
         }
 
-        if (a_out.affixes.empty() || a_out.affixes.size() > static_cast<std::size_t>(roll::kMaxAffixes)) {
+        if (a_out.affixes.empty() ||
+            a_out.affixes.size() > static_cast<std::size_t>(roll::kMaxAffixes + roll::kMaxImplicits)) {
+            return false;
+        }
+        roll::NormalizeRecord(a_out, a_table);
+        if (a_out.affixes.size() > static_cast<std::size_t>(roll::kMaxAffixes) ||
+            a_out.implicits.size() > static_cast<std::size_t>(roll::kMaxImplicits)) {
             return false;
         }
         if (a_out.affixes.size() >= 5) {
@@ -122,7 +139,37 @@ void Records::Note(RE::FormID a_enchantment, const roll::RolledItem& a_rolled, i
     if (a_enchantment == 0 || a_rolled.affixes.empty()) {
         return;
     }
+    Persist::NoteEnchTier(a_enchantment, roll::RarityCode(a_rolled));
     Persist::NoteItemRecord(a_enchantment, roll::MakeRecord(a_rolled, a_itemLevel));
+}
+
+std::shared_mutex& Records::TableLock()
+{
+    static std::shared_mutex lock;
+    return lock;
+}
+
+std::uint8_t Records::CodeFor(const RE::EnchantmentItem* a_enchantment)
+{
+    if (!a_enchantment) {
+        return 0;
+    }
+    const auto id = a_enchantment->GetFormID();
+    if (const auto code = Persist::EnchTier(id); code != 0) {
+        return code;
+    }
+    // A miss on the hot path: only ours is worth the work, and only once.
+    if (!Persist::IsAffixEnch(id)) {
+        return 0;
+    }
+    ReadGuard guard{ TableLock() };
+    View      view;
+    if (!Lookup(a_enchantment, view)) {
+        return 0;
+    }
+    const auto code = roll::RarityCode(view.rolled);
+    Persist::NoteEnchTier(id, code);
+    return code;
 }
 
 bool Records::Lookup(const RE::ExtraDataList* a_xList, View& a_out)
@@ -144,7 +191,7 @@ bool Records::Lookup(const RE::EnchantmentItem* a_enchantment, View& a_out)
 
     a_out = View{};
     a_out.enchantment = id;
-    a_out.band = Persist::EnchTier(id);
+    a_out.code = Persist::EnchTier(id);
 
     if (!Persist::GetItemRecord(id, a_out.record)) {
         // Ours as rolled, or not ours to describe. The ownership set is what
@@ -178,6 +225,12 @@ bool Records::Lookup(const RE::EnchantmentItem* a_enchantment, View& a_out)
             id, a_out.record.affixes.size(), a_out.record.itemLevel);
     }
 
+    // ★A 1.2.0 RECORD keeps a corrupted item's implicit in the explicit list;
+    // it moves across once, here, and is written back so the save carries the
+    // 2.1.0 layout from now on.
+    if (roll::NormalizeRecord(a_out.record, *table)) {
+        Persist::NoteItemRecord(id, a_out.record);
+    }
     a_out.complete = roll::ToRolled(a_out.record, *table, a_out.rolled);
     return true;
 }

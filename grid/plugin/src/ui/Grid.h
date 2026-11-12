@@ -876,6 +876,11 @@ namespace FUI::Grid
     void DropHeldForShelf();
 
     // G2: coin-pouch withdraw window (slider) — top level, settings pattern.
+    // POErim 2.1.0: put one unit of a currency on the cursor as the applicator,
+    // exactly as a right-click on its tile does -- for the currency pouch,
+    // which has no tile. Render thread.
+    void ArmCurrency(std::uint32_t a_base);
+
     void DrawPouchWindow();
     // GI63: the withdraw window takes the same keys as the quantity slider, so
     // the prompt bar has to know it is up (it is not a LootBarter slider).

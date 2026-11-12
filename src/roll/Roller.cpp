@@ -102,52 +102,132 @@ namespace roll
         }
     }
 
-    Band BandOf(int a_tier) noexcept
+    Rarity RarityOf(int a_explicits) noexcept
     {
-        if (a_tier <= 0) {
-            return Band::kWhite;
+        if (a_explicits <= 0) {
+            return Rarity::kNormal;
         }
-        if (a_tier <= 3) {
-            return Band::kBlue;
-        }
-        if (a_tier <= 6) {
-            return Band::kYellow;
-        }
-        if (a_tier <= 9) {
-            return Band::kPurple;
-        }
-        if (a_tier <= 12) {
-            return Band::kOrange;
-        }
-        return Band::kRed;
+        return a_explicits < kRareMinMods ? Rarity::kMagic : Rarity::kRare;
     }
 
-    const char* BandName(Band a_band) noexcept
+    Rarity RarityOf(const RolledItem& a_item) noexcept
     {
-        switch (a_band) {
-        case Band::kWhite:  return "white";
-        case Band::kBlue:   return "blue";
-        case Band::kYellow: return "yellow";
-        case Band::kPurple: return "purple";
-        case Band::kOrange: return "orange";
-        case Band::kRed:    return "red";
+        return RarityOf(a_item.Explicits());
+    }
+
+    const char* RarityName(Rarity a_rarity) noexcept
+    {
+        switch (a_rarity) {
+        case Rarity::kNone:   return "none";
+        case Rarity::kNormal: return "normal";
+        case Rarity::kMagic:  return "magic";
+        case Rarity::kRare:   return "rare";
         }
         return "?";
     }
 
-    // The tier marker, repeated once per band.
+    std::uint8_t RarityCode(const RolledItem& a_item) noexcept
+    {
+        auto code = static_cast<std::uint8_t>(static_cast<std::uint8_t>(RarityOf(a_item)) |
+                                              (PowerStepOf(a_item.tier) << 2));
+        if (a_item.corrupted) {
+            code = static_cast<std::uint8_t>(code | kRarityCorruptedBit);
+        }
+        return code;
+    }
+
+    Rarity RarityFromCode(std::uint8_t a_code) noexcept
+    {
+        return static_cast<Rarity>(a_code & 0x03);
+    }
+
+    int PowerStepFromCode(std::uint8_t a_code) noexcept
+    {
+        return (a_code >> 2) & 0x07;
+    }
+
+    bool CorruptedFromCode(std::uint8_t a_code) noexcept
+    {
+        return (a_code & kRarityCorruptedBit) != 0;
+    }
+
+    int PowerStepOf(int a_points) noexcept
+    {
+        if (a_points <= 0) {
+            return 0;
+        }
+        if (a_points <= 3) {
+            return 1;
+        }
+        if (a_points <= 6) {
+            return 2;
+        }
+        if (a_points <= 9) {
+            return 3;
+        }
+        if (a_points <= 12) {
+            return 4;
+        }
+        return 5;
+    }
+
+    std::array<int, 3> RarityWeightsOf(const Curve& a_band) noexcept
+    {
+        const auto& w = a_band.countWeights;
+        return { w[0], w[1] + w[2], w[3] + w[4] + w[5] + w[6] };
+    }
+
+    namespace
+    {
+        // Rescales a[first..last] to sum to a_total, keeping their split. A
+        // group that was all zero takes the total on its first entry.
+        void RescaleGroup(std::array<int, kMaxAffixes + 1>& a_w, std::size_t a_first,
+            std::size_t a_last, int a_total)
+        {
+            a_total = std::max(0, a_total);
+            int have = 0;
+            for (std::size_t i = a_first; i <= a_last; ++i) {
+                have += std::max(0, a_w[i]);
+            }
+            if (have <= 0) {
+                for (std::size_t i = a_first; i <= a_last; ++i) {
+                    a_w[i] = 0;
+                }
+                a_w[a_first] = a_total;
+                return;
+            }
+            int given = 0;
+            for (std::size_t i = a_first; i <= a_last; ++i) {
+                const int share = static_cast<int>(
+                    static_cast<long long>(std::max(0, a_w[i])) * a_total / have);
+                a_w[i] = share;
+                given += share;
+            }
+            // Rounding remainder onto the largest entry so the group sums exactly.
+            std::size_t big = a_first;
+            for (std::size_t i = a_first; i <= a_last; ++i) {
+                if (a_w[i] > a_w[big]) {
+                    big = i;
+                }
+            }
+            a_w[big] += a_total - given;
+        }
+    }
+
+    void SetRarityWeights(Curve& a_band, int a_normal, int a_magic, int a_rare) noexcept
+    {
+        a_band.countWeights[0] = std::max(0, a_normal);
+        RescaleGroup(a_band.countWeights, 1, 2, a_magic);
+        RescaleGroup(a_band.countWeights, 3, 6, a_rare);
+    }
+
+    // The tier marker: once for magic, twice for rare.
     //
     // ★ONE GLYPH, ONE PLACE, AND THE PLAYER PICKS IT. The default is written
     // as explicit UTF-8 bytes so the source file's encoding cannot change what
     // ships; the INI overrides it, because whether a glyph draws or comes out a
     // box depends on the player's fonts and menu replacers -- which is not
     // something this file can know.
-    //
-    // U+25C6 BLACK DIAMOND by default. Grid Inventory merges Segoe UI Symbol
-    // across 0x2010-0x2BFF (UIRoot.cpp), so anything in that range renders
-    // there. Vanilla's Scaleform menus are the risk: if a barter or container
-    // screen draws a box, set TierMarker in the INI to a plain ASCII character
-    // -- or to nothing at all, which drops the marker entirely.
     constexpr const char* kDefaultTierMark = "\xE2\x97\x86";
 
     // ★A COPY, not a string_view onto the caller's memory. What arrives is a
@@ -180,22 +260,19 @@ namespace roll
         return inName;
     }
 
-    // Built per call rather than cached, because the mark is no longer a
-    // compile-time constant -- and this runs once per item card, which is
-    // nowhere near hot enough to be worth a table that could go stale.
-    //
-    // ★THE BAND IS THE COUNT. Band::kBlue is 1, kRed is 5, and the enum's
-    // order is the repeat count -- so this is a cast rather than a switch, and
-    // adding a band in the middle would change the marks without touching this
-    // function. That is intended: the mark IS the band's ordinal.
-    std::string BandMark(Band a_band)
+    // Normal 0 marks, magic 1, rare 2.
+    std::string RarityMark(Rarity a_rarity)
     {
         const auto& mark = TierMarkStorage();
-        const auto  count = static_cast<std::size_t>(a_band);
-
+        std::size_t count = 0;
+        if (a_rarity == Rarity::kMagic) {
+            count = 1;
+        } else if (a_rarity == Rarity::kRare) {
+            count = 2;
+        }
         std::string out;
         if (mark.empty() || count == 0) {
-            return out;  // marker switched off, or a white item
+            return out;
         }
         out.reserve(mark.size() * count);
         for (std::size_t i = 0; i < count; ++i) {
@@ -277,10 +354,9 @@ namespace roll
             out += forSuffix->affix->suffix;
         }
 
-        // ★TIER, AS A REPEATED MARKER, TRAILING -- AND OPTIONAL.
+        // ★RARITY, AS A REPEATED MARKER, TRAILING -- AND OPTIONAL.
         //
-        // BAND, not raw tier. Fifteen marks would be a wall of glyphs, and one
-        // mark per band maps 1:1 onto white/blue/yellow/purple/orange/red.
+        // One mark for magic, two for rare (RarityMark).
         //
         // TRAILING, because a leading marker reorders every alphabetical item
         // list in the game.
@@ -288,11 +364,11 @@ namespace roll
         // OPTIONAL, because a name is an expensive place to put it: the marker
         // joins the list's sort key, it is what a narrow barter column
         // truncates, and it goes into the save as a per-instance override. With
-        // Grid Inventory installed the tint already carries the band and none
+        // Grid Inventory installed the tint already carries the rarity and none
         // of that is worth paying -- see TierMarkInNameStorage for why the
         // cheaper surface, the item card, is not on offer.
         if (TierMarkInName()) {
-            if (const std::string mark = BandMark(BandOf(tier)); !mark.empty()) {
+            if (const std::string mark = RarityMark(RarityOf(*this)); !mark.empty()) {
                 out += ' ';
                 out += mark;
             }
@@ -347,13 +423,33 @@ namespace roll
 
     void FitPool(std::vector<const Affix*>& a_pool, const RolledItem& a_item)
     {
-        const bool prefixesFull = a_item.Count(AffixKind::kPrefix) >= MaxPrefixes();
-        const bool suffixesFull = a_item.Count(AffixKind::kSuffix) >= MaxSuffixes();
+        FitPool(a_pool, a_item, MaxPrefixes(), MaxSuffixes());
+    }
+
+    void FitPool(std::vector<const Affix*>& a_pool, const RolledItem& a_item, int a_maxPrefixes,
+        int a_maxSuffixes)
+    {
+        const bool prefixesFull = a_item.Count(AffixKind::kPrefix) >= a_maxPrefixes;
+        const bool suffixesFull = a_item.Count(AffixKind::kSuffix) >= a_maxSuffixes;
         std::erase_if(a_pool, [&](const Affix* a_candidate) {
             if (a_candidate->kind == AffixKind::kPrefix && prefixesFull) {
                 return true;
             }
             if (a_candidate->kind == AffixKind::kSuffix && suffixesFull) {
+                return true;
+            }
+            return std::any_of(a_item.affixes.begin(), a_item.affixes.end(),
+                [&](const RolledAffix& a_have) {
+                    return a_have.affix == a_candidate ||
+                           a_have.affix->group == a_candidate->group;
+                });
+        });
+    }
+
+    void FitImplicitPool(std::vector<const Affix*>& a_pool, const RolledItem& a_item)
+    {
+        std::erase_if(a_pool, [&](const Affix* a_candidate) {
+            if (!a_candidate->Implicit()) {
                 return true;
             }
             return std::any_of(a_item.affixes.begin(), a_item.affixes.end(),
@@ -489,26 +585,52 @@ namespace roll
         }
 
         const int wanted = WeightedPickArray(countWeights, a_rng);
-        if (wanted <= 0) {
-            return result;  // a plain white item, and that is a legitimate roll
-        }
 
         const auto tierWeights = TierWeightsFor(a_tuning, a_ctx.itemLevel);
 
-        // ★EXPLICIT AFFIXES ONLY. The count curve says how many the item gets,
-        // 0 to 6, capped at MaxPrefixes + MaxSuffixes. A drop never rolls an
-        // implicit: that slot sits outside the cap and only a Vaal Orb fills it
-        // (Craft.cpp).
+        // ★THE BASE IMPLICIT FIRST (2.1.0). Every craftable item gets exactly
+        // one, white items included: it belongs to the base, sits outside the
+        // 3 + 3, and replaces the vanilla enchantment new items used to carry.
+        // Drawn before the explicits so the mod-group rule keeps an explicit
+        // from repeating the implicit's effect. An item whose kind has no
+        // implicit in the table simply has none.
+        if (a_tuning.rollImplicit) {
+            auto implicits = ImplicitPool(a_table, a_ctx);
+            FitImplicitPool(implicits, result);
+            while (!implicits.empty()) {
+                RolledAffix rolled;
+                const auto  drawn = DrawAffix(implicits, a_ctx, tierWeights, a_rng, rolled);
+                if (drawn == Draw::kExhausted) {
+                    break;
+                }
+                if (drawn == Draw::kDrawn) {
+                    result.tier += rolled.points;
+                    result.affixes.push_back(rolled);
+                    break;
+                }
+            }
+        }
+
+        if (wanted <= 0) {
+            return result;  // a normal (white) item, and that is a legitimate roll
+        }
+
+        // ★RARITY DECIDES THE CAPS. 1-2 mods is MAGIC: at most one prefix and
+        // one suffix. 3-6 is RARE: the INI's caps. The count curve read as
+        // rarity weights is in RarityWeightsOf.
         const int explicitCap = MaxPrefixes() + MaxSuffixes();
         const int explicitWanted = std::min(wanted, explicitCap);
+        const bool magic = RarityOf(explicitWanted) == Rarity::kMagic;
+        const int  capP = magic ? kMagicMaxPrefixes : MaxPrefixes();
+        const int  capS = magic ? kMagicMaxSuffixes : MaxSuffixes();
 
-        result.affixes.reserve(static_cast<std::size_t>(explicitWanted));
+        result.affixes.reserve(result.affixes.size() + static_cast<std::size_t>(explicitWanted));
 
         // The pool and the draw are functions of their own (below) because a
         // crafting orb adds an affix to an item by exactly the same rules a
         // fresh roll does -- see Craft.cpp. One implementation, two callers.
         auto pool = EligiblePool(a_table, a_ctx);
-        FitPool(pool, result);
+        FitPool(pool, result, capP, capS);
 
         int explicits = 0;
         while (explicits < explicitWanted && !pool.empty()) {
@@ -524,15 +646,24 @@ namespace roll
             result.affixes.push_back(rolled);
             ++explicits;
             // A kind that just reached its cap leaves the pool.
-            FitPool(pool, result);
+            FitPool(pool, result, capP, capS);
         }
 
         if (a_ctx.forNpc && result.tier > a_tuning.npcMaxTier) {
             // Trim from the weakest end so the ceiling costs the item its least
-            // interesting affix rather than its best one.
-            std::sort(result.affixes.begin(), result.affixes.end(),
-                [](const RolledAffix& a_lhs, const RolledAffix& a_rhs) { return a_lhs.points < a_rhs.points; });
-            while (result.tier > a_tuning.npcMaxTier && !result.affixes.empty()) {
+            // interesting affix rather than its best one. The implicit belongs
+            // to the base and is never trimmed.
+            std::stable_sort(result.affixes.begin(), result.affixes.end(),
+                [](const RolledAffix& a_lhs, const RolledAffix& a_rhs) {
+                    const bool li = a_lhs.affix && a_lhs.affix->Implicit();
+                    const bool ri = a_rhs.affix && a_rhs.affix->Implicit();
+                    if (li != ri) {
+                        return ri;   // explicits first: they are what gets trimmed
+                    }
+                    return a_lhs.points < a_rhs.points;
+                });
+            while (result.tier > a_tuning.npcMaxTier && !result.affixes.empty() &&
+                   !(result.affixes.front().affix && result.affixes.front().affix->Implicit())) {
                 result.tier -= result.affixes.front().points;
                 result.affixes.erase(result.affixes.begin());
             }

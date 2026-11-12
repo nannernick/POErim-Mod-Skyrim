@@ -70,9 +70,10 @@ namespace Persist
     // item, and an ExtraDataList pointer is rewritten by the engine on every
     // container move -- neither can name one sword among three.
     //
-    // The band is roll::Band as an integer: 0 white, 1 blue, 2 yellow,
-    // 3 purple, 4 orange, 5 red. Zero is never stored; it means "no opinion".
-    void NoteEnchTier(RE::FormID a_enchantment, std::uint8_t a_band);
+    // The value is roll::RarityCode (2.1.0): rarity in the low two bits, the
+    // power step above it, corrupted in bit 7. Zero is never stored; it means
+    // "no opinion". (Named "tier" for the 'ETIR' record it lives in.)
+    void NoteEnchTier(RE::FormID a_enchantment, std::uint8_t a_code);
 
     // 0 when nothing was recorded -- an unrolled item, a vanilla enchantment,
     // or a save written before this record existed.
@@ -85,6 +86,10 @@ namespace Persist
     void ForgetEnchTier(RE::FormID a_enchantment);
 
     [[nodiscard]] std::size_t EnchTierCount();
+
+    // Drops every rarity code; each is recomputed from its item record the
+    // next time the item is drawn. After a table reload.
+    void ForgetRarityCodes();
 
     // ---- "this enchantment is ours", keyed by the created enchantment -------
     //

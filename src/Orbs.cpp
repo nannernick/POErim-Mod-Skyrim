@@ -15,8 +15,10 @@
 
 #include "roll/Drops.h"
 
+#include <algorithm>
 #include <array>
 #include <atomic>
+#include <cctype>
 #include <cmath>
 #include <deque>
 #include <format>
@@ -62,6 +64,7 @@ namespace
         Rgba(200, 200, 205),   // scour
         Rgba(250, 215, 235),   // divine
         Rgba(215, 60, 40),     // vaal
+        Rgba(120, 150, 235),   // regal (blue half; the sprite is blue and gold)
     };
 
     std::uint32_t Today()
@@ -84,33 +87,108 @@ namespace
         return nullptr;
     }
 
-    // The vanilla gems' meshes, in FormID order, so each orb looks like a gem
-    // and two orbs mostly look like different gems. Gold's coin when the
-    // load order somehow has no gem.
-    std::vector<const char*> GemModels(RE::BGSKeyword* a_gemKeyword)
+    // ★ONE MESH FOR EVERY ORB (bug fix, 2.1.0).
+    //
+    // 1.2.0 handed each orb a DIFFERENT mesh, round-robin over every Skyrim.esm
+    // MISC carrying VendorItemGem, as the load order had overridden it. Grid
+    // Inventory sizes an item it has no entry for by the tuned sibling that
+    // shares its nif (main.cpp DefFor, model-level defs) and captures its icon
+    // from that nif -- so whichever orb landed on a mesh some other, bigger
+    // item shared came out 2x2 with that item's picture (Nick: "the ones that
+    // replace chests"). The fix here is one small vanilla cut gem for all of
+    // them; the grid side pins every currency to 1x1 and its own PNG.
+    //
+    // The pick: the lowest-FormID Skyrim.esm gem whose model sits under
+    // clutter\gems\, so a load-order override that moved a gem's model to a
+    // container or a chest cannot be what the orbs inherit.
+    std::string g_orbModel;
+
+    std::string Lower(std::string a_text)
     {
-        std::vector<const char*> models;
-        auto*                    handler = RE::TESDataHandler::GetSingleton();
+        for (auto& ch : a_text) {
+            ch = static_cast<char>(std::tolower(static_cast<unsigned char>(ch)));
+            if (ch == '/') {
+                ch = '\\';
+            }
+        }
+        return a_text;
+    }
+
+    std::string PickGemModel(RE::BGSKeyword* a_gemKeyword)
+    {
+        auto*       handler = RE::TESDataHandler::GetSingleton();
+        std::string fallback;
         if (handler && a_gemKeyword) {
+            RE::FormID best = 0xFFFFFFFF;
+            std::string bestModel;
             for (auto* misc : handler->GetFormArray<RE::TESObjectMISC>()) {
                 if (!misc || misc->GetFormID() >= 0x01000000 ||
                     !static_cast<RE::BGSKeywordForm*>(misc)->HasKeyword(a_gemKeyword)) {
                     continue;
                 }
                 const char* model = static_cast<RE::TESModel*>(misc)->GetModel();
-                if (model && *model) {
-                    models.push_back(model);
+                if (!model || !*model) {
+                    continue;
+                }
+                const auto lower = Lower(model);
+                if (lower.find("clutter\\gems\\") != std::string::npos && misc->GetFormID() < best) {
+                    best = misc->GetFormID();
+                    bestModel = model;
+                }
+                if (fallback.empty()) {
+                    fallback = model;
                 }
             }
-        }
-        if (models.empty()) {
-            if (auto* gold = RE::TESForm::LookupByID<RE::TESObjectMISC>(0x0000000F)) {
-                if (const char* model = static_cast<RE::TESModel*>(gold)->GetModel(); model && *model) {
-                    models.push_back(model);
-                }
+            if (!bestModel.empty()) {
+                return bestModel;
             }
         }
-        return models;
+        if (!fallback.empty()) {
+            logger::warn("orbs: no vanilla gem under clutter\\gems\\; using '{}'", fallback);
+            return fallback;
+        }
+        if (auto* gold = RE::TESForm::LookupByID<RE::TESObjectMISC>(0x0000000F)) {
+            if (const char* model = static_cast<RE::TESModel*>(gold)->GetModel(); model && *model) {
+                logger::warn("orbs: no gem mesh at all; using gold's '{}'", model);
+                return model;
+            }
+        }
+        return {};
+    }
+
+    // ★THE DIFFICULTY, READ ON THE GAME THREAD (HandleDeath runs from the
+    // death drain's task). 0 Novice .. 5 Legendary.
+    int CurrentDifficulty()
+    {
+        const auto* player = RE::PlayerCharacter::GetSingleton();
+        return player ? std::clamp(static_cast<int>(player->GetGameStatsData().difficulty), 0, 5) : 0;
+    }
+
+    std::atomic<float> g_lastDropMult{ 1.0f };
+    std::atomic<int>   g_lastDifficulty{ 0 };
+
+    float ActiveDropMultiplier()
+    {
+        const int difficulty = CurrentDifficulty();
+        g_lastDifficulty.store(difficulty);
+        const float mult = Config::DropMultiplierAuto()
+                               ? roll::DifficultyMultiplier(difficulty, Config::DropQuantityPerDifficulty())
+                               : (std::max)(1.0f, Config::DropMultiplierOverride());
+        g_lastDropMult.store(mult);
+        return mult;
+    }
+
+    // ★NEW LOOT NEVER CARRIES A VANILLA ENCHANTMENT (2.1.0): the corpse's
+    // loose (non-worn) enchanted generic gear becomes its plain template, in
+    // the same per-frame death task (Apply::SwapVanillaLoose).
+    void SwapVanillaGear(RE::Actor* a_actor)
+    {
+        if (Config::ReplaceVanillaEnchants()) {
+            if (const int n = Apply::SwapVanillaLoose(a_actor); n > 0) {
+                logger::debug("orbs: {:08X} -- {} vanilla-enchanted item(s) became their plain template",
+                    a_actor->GetFormID(), n);
+            }
+        }
     }
 
     // ---- deaths -------------------------------------------------------------
@@ -216,6 +294,8 @@ namespace
             ++g_stats.deaths;
         }
 
+        SwapVanillaGear(actor);
+
         const auto mode = Config::EnemyGearMode();
         const bool gearOut = mode == Config::GearMode::kAllGround;
         const bool goldOut = mode == Config::GearMode::kAllGround || mode == Config::GearMode::kItemsInventory;
@@ -231,7 +311,8 @@ namespace
             tuning.chance = 1.0f;
             tuning.baseCount = (std::max)(tuning.baseCount, 3.0f);
         }
-        const auto drop = roll::RollOrbDrop(static_cast<int>(actor->GetLevel()), tuning, Rng());
+        const auto drop = roll::RollOrbDrop(static_cast<int>(actor->GetLevel()), tuning, Rng(), 1.0f,
+            ActiveDropMultiplier());
         if (drop.total == 0) {
             return;
         }
@@ -323,6 +404,7 @@ namespace
     // The same rules Crafting applies, asked without changing anything.
     const char* CheckUnit(roll::Orb a_orb, RE::TESBoundObject* a_object, const RE::ExtraDataList* a_xl)
     {
+        const Records::ReadGuard guard{ Records::TableLock() };
         const auto* table = Records::Table();
         if (!table) {
             return "The affix table has not loaded";
@@ -331,13 +413,8 @@ namespace
         if (!Crafting::Craftable(a_object, reason)) {
             return reason;
         }
-        if (a_xl) {
-            if (a_xl->HasType(RE::ExtraDataType::kWorn) || a_xl->HasType(RE::ExtraDataType::kWornLeft)) {
-                return "Unequip it first";
-            }
-            if (a_xl->HasType(RE::ExtraDataType::kAliasInstanceArray)) {
-                return "Quest items can't be crafted";
-            }
+        if (a_xl && a_xl->HasType(RE::ExtraDataType::kAliasInstanceArray)) {
+            return "Quest items can't be crafted";
         }
         if (Sockets::RowOf(a_object->GetFormID(), a_xl)) {
             return "Socketed items can't be crafted";
@@ -347,25 +424,44 @@ namespace
         roll::RollContext ctx;
         ctx.itemSlots = Apply::SlotsOf(a_object);
         const auto* xEnch = a_xl ? a_xl->GetByType<RE::ExtraEnchantment>() : nullptr;
-        if (xEnch && xEnch->enchantment) {
-            if (!Persist::IsAffixEnch(xEnch->enchantment->GetFormID())) {
-                return "Items with a foreign enchantment can't be crafted";
-            }
+        const bool  ours = xEnch && xEnch->enchantment && Persist::IsAffixEnch(xEnch->enchantment->GetFormID());
+        if (ours) {
             Records::View view;
             if (!Records::Lookup(a_xl, view)) {
-                return "Enchanted by you, or too old to read: can't be crafted";
+                return "Too old to read: can't be crafted";
             }
             if (!view.complete) {
-                return "An old item whose affixes are gone from the table";
+                return "An old item whose mods are gone from the table";
             }
             rolled = view.rolled;
             ctx.itemLevel = view.record.itemLevel;
         } else {
-            if (!Apply::IsGeneric(a_object)) {
+            const auto kind = Apply::ClassifyEnchanted(a_object, a_xl);
+            if (kind == Apply::VanillaKind::kRefused) {
+                return Apply::IsGeneric(a_object) ? "Items with an enchantment of their own can't be crafted"
+                                                  : "Unique items can't be crafted";
+            }
+            if (kind != Apply::VanillaKind::kNone && !Config::ReplaceVanillaEnchants()) {
+                return "Items with an enchantment of their own can't be crafted";
+            }
+            if (kind == Apply::VanillaKind::kNone && !Apply::IsGeneric(a_object)) {
                 return "Unique items can't be crafted";
+            }
+            if (a_xl && kind == Apply::VanillaKind::kRecordEnchanted &&
+                (a_xl->HasType(RE::ExtraDataType::kWorn) || a_xl->HasType(RE::ExtraDataType::kWornLeft))) {
+                return "Unequip it first";
             }
             const auto* player = RE::PlayerCharacter::GetSingleton();
             ctx.itemLevel = player ? (std::max)(1, static_cast<int>(player->GetLevel())) : 1;
+            // ★WHAT IT WILL BE when the orb lands: a normal item with its base
+            // implicit. A fixed seed -- this is a question, not a roll.
+            roll::Tuning base;
+            for (auto& band : base.bands) {
+                band.countWeights.fill(0);
+                band.countWeights[0] = 1;
+            }
+            roll::Rng probe{ 12345u };
+            rolled = roll::Roll(*table, ctx, base, probe);
         }
         const roll::Tuning tuning;
         const auto         verdict = roll::CanCraft(a_orb, rolled, ctx, *table, tuning);
@@ -400,7 +496,7 @@ void Orbs::Init()
     }
     auto* ownKeyword = handler->LookupForm<RE::BGSKeyword>(kKeywordLocal, kPlugin);
     auto* gemKeyword = FindKeyword("VendorItemGem");
-    const auto models = GemModels(gemKeyword);
+    g_orbModel = PickGemModel(gemKeyword);
 
     int found = 0;
     for (int i = 0; i < roll::kOrbCount; ++i) {
@@ -422,15 +518,20 @@ void Orbs::Init()
         if (ownKeyword && !keywords->HasKeyword(ownKeyword)) {
             keywords->AddKeyword(ownKeyword);
         }
+        // ★EVERY ORB, THE SAME MESH, ALWAYS SET: the ESP carries no MODL, and
+        // a mesh an earlier session or another mod left on the form is not
+        // trusted (see PickGemModel).
         auto* model = static_cast<RE::TESModel*>(misc);
-        if (!models.empty() && (!model->GetModel() || !*model->GetModel())) {
-            model->SetModel(models[static_cast<std::size_t>(i) % models.size()]);
+        if (!g_orbModel.empty()) {
+            model->SetModel(g_orbModel.c_str());
         }
+        logger::info("orbs: {} [{:08X}] mesh '{}'", roll::OrbName(static_cast<roll::Orb>(i)),
+            misc->GetFormID(), model->GetModel() ? model->GetModel() : "(none)");
     }
     g_available.store(found == roll::kOrbCount);
-    logger::info("orbs: {} of {} orb forms found in {}; VendorItemGem {}, {} gem mesh(es)", found,
+    logger::info("orbs: {} of {} orb forms found in {}; VendorItemGem {}, orb mesh '{}'", found,
         roll::kOrbCount, kPlugin, gemKeyword ? "found" : "NOT FOUND (ARPG POV will not label orbs)",
-        models.size());
+        g_orbModel);
 }
 
 void Orbs::Install()
@@ -560,6 +661,31 @@ std::size_t Orbs::Cleanup(bool a_all)
         logger::info("orbs: cleaned up {} uncollected orb stack(s)", cleaned);
     }
     return cleaned;
+}
+
+std::string Orbs::ModelOf(roll::Orb a_orb)
+{
+    auto* form = Form(a_orb);
+    const char* model = form ? static_cast<RE::TESModel*>(form)->GetModel() : nullptr;
+    return model ? model : "";
+}
+
+bool Orbs::IsGemMesh(const std::string& a_model)
+{
+    return Lower(a_model).find("clutter\\gems\\") != std::string::npos;
+}
+
+float Orbs::LastDropMultiplier() { return g_lastDropMult.load(); }
+int   Orbs::LastDifficulty() { return g_lastDifficulty.load(); }
+float Orbs::PreviewDropMultiplier()
+{
+    return Config::DropMultiplierAuto()
+               ? roll::DifficultyMultiplier(g_lastDifficulty.load(), Config::DropQuantityPerDifficulty())
+               : (std::max)(1.0f, Config::DropMultiplierOverride());
+}
+void Orbs::RefreshDifficulty()
+{
+    (void)ActiveDropMultiplier();
 }
 
 Orbs::Stats Orbs::CurrentStats()

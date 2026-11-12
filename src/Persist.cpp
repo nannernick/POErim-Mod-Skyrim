@@ -46,13 +46,18 @@ namespace
     // layout will change on a different schedule from theirs.
     //
     //   u32 count
-    //   per entry:  u32 enchantment   u16 itemLevel   u8 flags   u8 affixCount
-    //   per affix:  u8 idLength   idLength bytes   u8 tier   f32 value
+    //   per entry:  u32 enchantment, then roll::WriteItemRecordV2 (Record.h):
+    //               explicits and implicits as two lists. Version 1 (one list)
+    //               is still read; roll::NormalizeRecord splits it later.
     constexpr std::uint32_t kItemRecords = 'ITEM';
-    constexpr std::uint32_t kItemRecordVersion = 1;
+    constexpr std::uint32_t kItemRecordVersion = roll::kItemRecordV2;
 
-    // An affix id longer than this is not one this build wrote.
-    constexpr std::size_t kMaxAffixIdLength = 96;
+    // ★'ETIR' VERSION 2 (2.1.0) holds the RARITY CODE (roll::RarityCode:
+    // rarity, power step, corrupted), not the 1.2.0 point band. A version-1
+    // record is read and DISCARDED: its bands are the old colour system, and
+    // every entry is recomputed from the item record the first time the item
+    // is drawn. A build before 2.1.0 skips version 2 and draws uncoloured.
+    constexpr std::uint32_t kEnchTierVersion = 2;
 
     // ★Bump this whenever the LAYOUT changes, never for content changes. The
     // loader refuses versions it does not know rather than guessing, so an old
@@ -169,23 +174,11 @@ namespace
             return;
         }
 
+        const auto write = [&](const void* a_src, std::size_t a_n) {
+            return a_intfc->WriteRecordData(a_src, static_cast<std::uint32_t>(a_n));
+        };
         for (const auto& [formID, record] : g_itemRecord) {
-            const auto affixCount = static_cast<std::uint8_t>(
-                (std::min)(record.affixes.size(), static_cast<std::size_t>(255)));
-            bool ok = a_intfc->WriteRecordData(formID) &&
-                      a_intfc->WriteRecordData(record.itemLevel) &&
-                      a_intfc->WriteRecordData(record.flags) &&
-                      a_intfc->WriteRecordData(affixCount);
-            for (std::uint8_t i = 0; ok && i < affixCount; ++i) {
-                const auto& affix = record.affixes[i];
-                const auto  length = static_cast<std::uint8_t>(
-                    (std::min)(affix.id.size(), kMaxAffixIdLength));
-                ok = a_intfc->WriteRecordData(length) &&
-                     (length == 0 || a_intfc->WriteRecordData(affix.id.data(), length)) &&
-                     a_intfc->WriteRecordData(affix.tier) &&
-                     a_intfc->WriteRecordData(affix.value);
-            }
-            if (!ok) {
+            if (!a_intfc->WriteRecordData(formID) || !roll::WriteItemRecordV2(write, record)) {
                 logger::error("save: failed writing an item record; the record is now short "
                               "and the rest will be rebuilt from enchantments on load");
                 return;
@@ -197,10 +190,10 @@ namespace
 
     void LoadItemRecords(SKSE::SerializationInterface* a_intfc, std::uint32_t a_version)
     {
-        if (a_version != kItemRecordVersion) {
-            logger::warn("load: item-record record is version {}, this build understands {}. "
+        if (a_version != roll::kItemRecordV1 && a_version != roll::kItemRecordV2) {
+            logger::warn("load: item-record record is version {}, this build understands {} and {}. "
                          "Skipping it -- affix lists will be rebuilt from enchantments.",
-                a_version, kItemRecordVersion);
+                a_version, roll::kItemRecordV1, roll::kItemRecordV2);
             return;
         }
 
@@ -212,38 +205,18 @@ namespace
 
         std::size_t restored = 0;
         std::size_t dropped = 0;
+        const auto  read = [&](void* a_dst, std::size_t a_n) {
+            return a_intfc->ReadRecordData(a_dst, static_cast<std::uint32_t>(a_n)) == a_n;
+        };
 
         std::scoped_lock lock{ g_tierLock };
         for (std::uint32_t i = 0; i < count; ++i) {
             RE::FormID       oldID = 0;
             roll::ItemRecord record;
-            std::uint8_t     affixCount = 0;
-            if (!a_intfc->ReadRecordData(oldID) || !a_intfc->ReadRecordData(record.itemLevel) ||
-                !a_intfc->ReadRecordData(record.flags) || !a_intfc->ReadRecordData(affixCount)) {
-                logger::error("load: item-record record ended after {} of {} entries", i, count);
-                break;
-            }
-
             // ★THE WHOLE ENTRY IS READ BEFORE THE ID IS RESOLVED. The entries
             // are variable-width, so one that is going to be dropped still has
             // to be walked to find where the next one starts.
-            bool ok = true;
-            record.affixes.reserve(affixCount);
-            for (std::uint8_t k = 0; ok && k < affixCount; ++k) {
-                std::uint8_t      length = 0;
-                roll::AffixRecord affix;
-                ok = a_intfc->ReadRecordData(length) && length <= kMaxAffixIdLength;
-                if (ok && length > 0) {
-                    affix.id.resize(length);
-                    ok = a_intfc->ReadRecordData(affix.id.data(), length) == length;
-                }
-                ok = ok && a_intfc->ReadRecordData(affix.tier) &&
-                     a_intfc->ReadRecordData(affix.value);
-                if (ok) {
-                    record.affixes.push_back(std::move(affix));
-                }
-            }
-            if (!ok) {
+            if (!a_intfc->ReadRecordData(oldID) || !roll::ReadItemRecord(read, a_version, record)) {
                 // Not recoverable past this point: the next entry's start is
                 // unknown. What was read so far is kept; the rest rebuild.
                 logger::error("load: item record {} of {} is malformed; stopping there", i, count);
@@ -259,7 +232,7 @@ namespace
             ++restored;
         }
 
-        logger::info("load: restored {} item record(s){}", restored,
+        logger::info("load: restored {} item record(s) (version {}){}", restored, a_version,
             dropped ? std::format(", dropped {} that no longer resolve", dropped) : "");
     }
 
@@ -294,7 +267,7 @@ namespace
     {
         std::scoped_lock lock{ g_tierLock };
 
-        if (!a_intfc->OpenRecord(kEnchTiers, kVersion)) {
+        if (!a_intfc->OpenRecord(kEnchTiers, kEnchTierVersion)) {
             logger::error("save: could not open the enchantment-tier record; affixed items "
                           "in this save will draw uncoloured");
             return;
@@ -428,10 +401,19 @@ namespace
     // list of record types rather than two interleaved parsers.
     void LoadEnchTiers(SKSE::SerializationInterface* a_intfc, std::uint32_t a_version)
     {
-        if (a_version != kVersion) {
+        if (a_version == 1) {
+            // ★1.2.0'S BANDS, READ AND THROWN AWAY. They are the point sum the
+            // colour used to be; 2.1.0's colour is the mod count. Walking the
+            // record (rather than skipping it) is not needed -- SKSE moves to
+            // the next record by length -- so nothing is read at all.
+            logger::info("load: enchantment colours are from 1.2.0 (point bands); each item's "
+                         "rarity is recomputed from its record the first time it is drawn");
+            return;
+        }
+        if (a_version != kEnchTierVersion) {
             logger::warn("load: enchantment-tier record is version {}, this build understands {}. "
                          "Skipping it -- affixed items in this save will draw uncoloured.",
-                a_version, kVersion);
+                a_version, kEnchTierVersion);
             return;
         }
 
@@ -728,6 +710,12 @@ void Persist::ForgetEnchTier(RE::FormID a_enchantment)
     g_enchTier.erase(a_enchantment);
 }
 
+void Persist::ForgetRarityCodes()
+{
+    std::scoped_lock lock{ g_tierLock };
+    g_enchTier.clear();
+}
+
 std::size_t Persist::EnchTierCount()
 {
     std::scoped_lock lock{ g_tierLock };
@@ -788,7 +776,7 @@ std::size_t Persist::AffixEnchCount()
 
 void Persist::NoteItemRecord(RE::FormID a_enchantment, const roll::ItemRecord& a_record)
 {
-    if (a_enchantment == 0 || a_record.affixes.empty()) {
+    if (a_enchantment == 0 || (a_record.affixes.empty() && a_record.implicits.empty())) {
         return;
     }
     std::scoped_lock lock{ g_tierLock };
@@ -800,8 +788,10 @@ void Persist::NoteItemRecord(RE::FormID a_enchantment, const roll::ItemRecord& a
     // A shared enchantment (see the header): the affixes are necessarily the
     // same, so only the level and the flags can have anything new to say.
     const auto level = (std::max)(it->second.itemLevel, a_record.itemLevel);
+    const auto flags = static_cast<std::uint8_t>(it->second.flags & roll::kRecordImplicitGranted);
     it->second = a_record;
     it->second.itemLevel = level;
+    it->second.flags = static_cast<std::uint8_t>(it->second.flags | flags);
 }
 
 bool Persist::GetItemRecord(RE::FormID a_enchantment, roll::ItemRecord& a_out)

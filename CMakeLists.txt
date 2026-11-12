@@ -16,7 +16,7 @@ set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 # fails on mismatched runtime.
 set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
 
-project(DiabloInSkyrim VERSION 1.2.0 LANGUAGES CXX)
+project(DiabloInSkyrim VERSION 2.1.0 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 23)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -164,6 +164,7 @@ list(APPEND SOURCES src/Orbs.h src/Orbs.cpp)
 
 # DiabloLootAPI: bands, currency and hover lines for a loot-label mod.
 list(APPEND SOURCES src/api/DiabloLootAPI.h src/LootApi.h src/LootApi.cpp)
+list(APPEND SOURCES src/TableReload.h)
 
 add_library(${PROJECT_NAME} SHARED ${SOURCES})
 

@@ -14,6 +14,10 @@
 
 #include <algorithm>
 #include <filesystem>
+#include <format>
+#include <map>
+#include <mutex>
+#include <shared_mutex>
 
 #include "Apply.h"
 #include "Config.h"
@@ -27,6 +31,7 @@
 #include "Pricing.h"
 #include "QuestReward.h"
 #include "Records.h"
+#include "TableReload.h"
 #include "Notify.h"
 #include "MgefSurvey.h"
 #include "Sockets.h"
@@ -50,12 +55,14 @@ namespace
     // Every complaint names its line number and says what the consequence is, and
     // a bad row is skipped rather than fatal -- one typo should cost one affix,
     // not the whole mod.
-    void LoadAffixTable()
+    // Loads the base table and every add-on into a_table. Used at kDataLoaded
+    // and by the debug menu's reload (into a fresh table, then swapped).
+    bool LoadTableInto(roll::AffixTable& a_table)
     {
         const std::string file = "Data/SKSE/Plugins/DiabloLoot_affixes.csv";
 
         std::vector<std::string> errors;
-        const bool               ok = g_affixes.Load(file, errors);
+        const bool               ok = a_table.Load(file, errors);
 
         if (!ok) {
             logger::error("AFFIX TABLE FAILED TO LOAD from {}", file);
@@ -63,7 +70,7 @@ namespace
                 logger::error("  {}", error);
             }
             logger::error("  no affixes are available; nothing will roll");
-            return;
+            return false;
         }
 
         // ADD-ON FILES, merged after the base table.
@@ -95,7 +102,7 @@ namespace
 
         for (const auto& addon : addons) {
             std::vector<std::string> addonErrors;
-            g_affixes.MergeFile(addon, addonErrors);
+            a_table.MergeFile(addon, addonErrors);
             logger::info("  merged add-on {}", roll::PathToUtf8(addon.filename()));
             for (const auto& err : addonErrors) {
                 logger::warn("    {}", err);
@@ -103,7 +110,7 @@ namespace
         }
 
         logger::info("affix table: {} affixes, {} tier rows from {}{}",
-            g_affixes.Affixes().size(), g_affixes.TierRowCount(), file,
+            a_table.Affixes().size(), a_table.TierRowCount(), file,
             addons.empty() ? "" : std::format(" + {} add-on file(s)", addons.size()));
 
         if (!errors.empty()) {
@@ -116,11 +123,17 @@ namespace
         // A slot no item can present, or a tier no level unlocks, means an affix
         // that silently never appears. Cheaper to say so here than to wonder in
         // six months why nothing ever rolls Muffle.
-        for (const auto& affix : g_affixes.Affixes()) {
+        for (const auto& affix : a_table.Affixes()) {
             if (affix.mgef.empty()) {
                 logger::debug("  '{}' has no mgef yet; it cannot be applied to an item", affix.id);
             }
         }
+        return true;
+    }
+
+    void LoadAffixTable()
+    {
+        (void)LoadTableInto(g_affixes);
     }
 
     void InitializeLog()
@@ -287,6 +300,7 @@ namespace
             Records::Forget();
             GridTint::ForgetTooltipItem();
             DebugMenu::Forget();
+            LootApi::Invalidate();
             break;
 
         case SKSE::MessagingInterface::kNewGame:
@@ -318,6 +332,74 @@ namespace
             break;
         }
     }
+}
+
+bool ReloadAffixTable(std::string& a_report)
+{
+    roll::AffixTable fresh;
+    if (!LoadTableInto(fresh)) {
+        a_report = "The base CSV did not load; the live table is unchanged. See DiabloInSkyrim.log.";
+        return false;
+    }
+    {
+        // ★EXCLUSIVE: every RolledItem in flight points into the table, and
+        // every holder takes the shared side (Records::ReadGuard).
+        std::unique_lock lock{ Records::TableLock() };
+        g_affixes = std::move(fresh);
+        Apply::ResolveEffects(g_affixes);
+        Records::Forget();
+        Persist::ForgetRarityCodes();   // recomputed from the records against the new table
+    }
+    LootApi::Invalidate();
+    GridTint::RequestRebuild();
+    a_report = std::format("Reloaded: {} affixes, {} tier rows.", g_affixes.Affixes().size(),
+        g_affixes.TierRowCount());
+    logger::warn("affix table: RELOADED at the player's request -- {}", a_report);
+    return true;
+}
+
+std::string ListReplaceableEnchantments()
+{
+    auto* handler = RE::TESDataHandler::GetSingleton();
+    if (!handler) {
+        return "No data handler.";
+    }
+    std::map<std::string, int> byEffect;
+    std::size_t                items = 0;
+    const auto visit = [&](RE::TESBoundObject* a_object, RE::EnchantmentItem* a_ench) {
+        if (!a_object || !a_ench ||
+            Apply::ClassifyEnchanted(a_object, nullptr) != Apply::VanillaKind::kRecordEnchanted) {
+            return;
+        }
+        ++items;
+        std::string effects;
+        for (const auto* effect : a_ench->effects) {
+            if (effect && effect->baseEffect) {
+                const char* name = effect->baseEffect->GetName();
+                effects += std::format("{}{}", effects.empty() ? "" : " + ", name && *name ? name : "?");
+            }
+        }
+        byEffect[effects.empty() ? std::string{ "(no effect)" } : effects]++;
+    };
+    for (auto* weapon : handler->GetFormArray<RE::TESObjectWEAP>()) {
+        if (weapon) {
+            visit(weapon, weapon->formEnchanting);
+        }
+    }
+    for (auto* armor : handler->GetFormArray<RE::TESObjectARMO>()) {
+        if (armor) {
+            visit(armor, armor->formEnchanting);
+        }
+    }
+    logger::info("replaceable vanilla enchantments: {} generic enchanted record(s), {} distinct "
+                 "effect set(s) -- these effects are lost when ReplaceVanillaEnchants replaces them:",
+        items, byEffect.size());
+    for (const auto& [effects, count] : byEffect) {
+        logger::info("  {:4} x {}", count, effects);
+    }
+    return std::format("{} generic enchanted record(s), {} distinct effect set(s); the full list is "
+                       "in DiabloInSkyrim.log.",
+        items, byEffect.size());
 }
 
 SKSEPluginInfo(

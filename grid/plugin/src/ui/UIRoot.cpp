@@ -1,4 +1,5 @@
 ﻿#include "ui/UIRoot.h"
+#include "ui/CurrencyPouch.h"
 #include "ui/Editor.h"
 #include "ui/Equip.h"
 #include "game/Costume.h"
@@ -4905,6 +4906,7 @@ namespace FUI::UIRoot
         Equip::DrawLoadoutWindows();   // L2: loadout +buy / delete confirm (top level)
         Grid::DrawPouchWindow();       // G2: coin-pouch withdraw (top level)
         Grid::DrawRechargeWindow();    // (1.3.1) soul-gem recharge (top level)
+        CurrencyPouch::Draw();         // POErim 2.1.0: currency pouch (top level)
         LootBarter::DrawShelfBag();    // (1.3.1) opened shelf-bag windows (top level)
         LootBarter::DrawShelfPouch();  // (1.3.2a) shelf-pouch withdraw (top level)
         Grid::DrawTrashConfirm();      // F2: favorite-intake confirm (top level)
@@ -5100,6 +5102,7 @@ namespace FUI::UIRoot
         Grid::ProcessBookRead();   // raise the Book Menu OUTSIDE the render pass
         Grid::ProcessFavorites();  // GI32: favourites, same reason
         Grid::ProcessApplies();    // currency (orb) uses, same reason
+        CurrencyPouch::Tick();     // pouch counts and ground drops, same reason
         Grid::ProcessRecharge();   // (1.3.1) soul-gem recharge, same reason
         Equip::ProcessPending();   // equip/unequip OUTSIDE the render pass
         Loadout::ProcessPending();  // L1: deferred loadout tab switch

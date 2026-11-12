@@ -1,39 +1,45 @@
 // =============================================================================
 //  Crafting orbs -- changing an item that already exists. Pure, like the roller.
 // =============================================================================
-//  Path of Exile's currency, on this mod's own model. An item is up to
-//  MaxPrefixes() prefixes and MaxSuffixes() suffixes -- its EXPLICIT affixes,
-//  six by default -- plus one IMPLICIT slot outside that cap which only
-//  corruption fills (Roll.h). Each affix is worth 1-3 points and the colour is
-//  the point sum, so every rule below is written in terms of the explicit count
-//  and the band falls out.
+//  Path of Exile 1's currency rules (2.1.0). Rarity is the explicit count
+//  (Roll.h): 0 normal, 1-2 magic (one prefix + one suffix at most), 3-6 rare.
+//  Implicits sit outside all of it and no orb adds or removes one, except a
+//  Vaal Orb's chance at a second.
 //
-//      Transmutation   a plain item           -> 1 explicit
-//      Augmentation    exactly 1 explicit     -> 2
-//      Alchemy         a plain item           -> 4 explicits at once
-//      Exalted         2 to 5 explicits       -> one more, on a side with room;
-//                                                the fifth needs item level
-//                                                fifthAffixMinLevel, the sixth
-//                                                sixthAffixMinLevel
-//      Chaos           2 or more explicits    -> explicits rerolled, same count
-//      Scouring        anything with affixes  -> nothing: back to the plain base
-//      Divine          anything with affixes  -> every VALUE rerolled inside the
-//                                                tier it already has
-//      Vaal            anything uncorrupted   -> CORRUPTS the item: no orb works
-//                                                on it again. One of, at equal
-//                                                weight by default:
+//      Transmutation   normal                 -> magic, 1 mod
+//      Augmentation    magic with 1 mod       -> 2 mods, still magic (the
+//                                                other kind: 1P + 1S at most)
+//      Regal           magic with 2 mods      -> 3 mods, rare; nothing it had
+//                                                changes
+//      Alchemy         normal                 -> rare, 4 mods
+//      Exalted         rare, 3 to 5 mods      -> one more; the fifth needs item
+//                                                level fifthAffixMinLevel, the
+//                                                sixth sixthAffixMinLevel
+//      Chaos           rare, 3 to 6 mods      -> a new set, same count
+//      Scouring        any mods               -> normal; implicits stay
+//      Divine          anything with a range  -> every value, implicits
+//                                                included, rerolled inside its
+//                                                tier
+//      Vaal            anything uncorrupted   -> CORRUPTS the item: no orb,
+//                                                Divine and Scouring included,
+//                                                works on it again. First a
+//                                                VaalRules::addImplicitChance
+//                                                draw for a second implicit
+//                                                (a no-op when none can be
+//                                                added); otherwise one of, by
+//                                                weight:
 //                                                  * the item is destroyed
 //                                                    (can be switched off)
 //                                                  * every value moves up, or
 //                                                    every value moves down,
 //                                                    inside its tier
-//                                                  * an implicit is added,
-//                                                    outside the six
 //                                                  * the explicits become
 //                                                    different affixes at
 //                                                    random tiers
-//                                                An outcome the item cannot take
-//                                                is left out of the draw.
+//                                                and when none of those apply,
+//                                                corruption alone.
+//
+//  Every refusal leaves the item bit-identical, and the orb is not consumed.
 //
 //  A new affix is drawn by the SAME function a fresh roll uses (DrawAffix in
 //  Roll.h): the item's slots, its stored item level, the affix weights and the
@@ -66,9 +72,10 @@ namespace roll
         kScour,
         kDivine,
         kVaal,
+        kRegal,   // 2.1.0, DiabloInSkyrim.esp 0x809
     };
 
-    inline constexpr int kOrbCount = static_cast<int>(Orb::kVaal) + 1;
+    inline constexpr int kOrbCount = static_cast<int>(Orb::kRegal) + 1;
 
     [[nodiscard]] const char* OrbName(Orb a_orb) noexcept;       // "Orb of Transmutation"
     [[nodiscard]] const char* OrbKey(Orb a_orb) noexcept;        // "transmute"
@@ -81,19 +88,20 @@ namespace roll
     {
         kOk,
         kNotAffixable,      // the item presents no slot the table knows
-        kNeedsNoAffixes,    // Transmutation or Alchemy on an item that already has some
-        kNeedsOneAffix,     // Augmentation on an item without exactly one explicit
-        kNeedsTwoToFour,    // Exalted on an item with fewer than two explicits
-        kNeedsTwoOrMore,    // Chaos on an item with fewer than two explicits
-        kNothingToRemove,   // Scouring on a plain item
+        kNeedsNormal,       // Transmutation or Alchemy on an item with mods
+        kNeedsOneAffix,     // Augmentation on an item without exactly one mod
+        kNeedsRare,         // Exalted or Chaos on a normal or magic item
+        kNeedsMagicTwo,     // Regal on a magic item with one mod
+        kNeedsMagic,        // Regal on a normal or rare item
+        kNothingToRemove,   // Scouring on a normal item
         kFull,              // every prefix and suffix slot is taken
         kFifthLocked,       // the fifth affix needs Tuning::fifthAffixMinLevel
         kNoEligibleAffix,   // nothing left in the pool for this item
         kSixthLocked,       // the sixth affix needs Tuning::sixthAffixMinLevel
-        kNeedsAffixes,      // Divine on a plain item
+        kNeedsAffixes,      // Divine on an item with nothing on it at all
         kNothingToReroll,   // Divine on an item whose affixes have no range
         kCorrupted,         // the item is corrupted; no orb works on it
-        kNothingToCorrupt,  // Vaal on an item none of its outcomes apply to
+        kNothingToCorrupt,  // Vaal on an item it cannot change at all
     };
 
     // One short line for the player: why the orb did nothing.
@@ -107,8 +115,9 @@ namespace roll
         kDestroyed,        // the item is gone; a_item is left as it was
         kValuesUp,
         kValuesDown,
-        kImplicitAdded,
+        kImplicitAdded,    // a second implicit
         kRerolled,
+        kCorruptedOnly,    // corrupted and nothing else (no valid outcome)
     };
 
     [[nodiscard]] const char* EffectName(CraftEffect a_effect) noexcept;

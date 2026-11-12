@@ -1,4 +1,5 @@
 #include "ui/IconCache.h"
+#include "ui/CurrencyPouch.h"
 #include "ui/ItemPreview.h"
 #include "ui/Theme.h"
 
@@ -999,6 +1000,11 @@ namespace FUI
     const IconCache::Icon* IconCache::Get(RE::TESBoundObject* a_obj) const
     {
         if (!a_obj) return nullptr;
+        // ★POErim 2.1.0: a currency is its own PNG and nothing else -- never a
+        // 3D capture of whatever mesh it borrows (the "chest on the cursor").
+        // Every caller (board, containers, shops, the doll, the carried item)
+        // comes through here or through Fallback, which does the same.
+        if (CurrencyPouch::IsCurrency(a_obj)) return CurrencyPouch::IconOf(a_obj);
         // ★GI52 flat style: there is no sprite to find — every caller already
         // falls through to Fallback::Get on a miss, so answering "nothing"
         // here is the whole switch. Paired with Capturable() refusing to queue,
@@ -2546,6 +2552,7 @@ namespace FUI
 
     void IconCache::QueueCapture(RE::TESBoundObject* a_obj)
     {
+        if (CurrencyPouch::IsCurrency(a_obj)) return;   // POErim 2.1.0: never captured
         // ★★★GI90: THE DRAW'S SHARE OF A SLOW FIRST OPEN.
         //
         // This runs from the tile loop, once per tile per frame, and the first

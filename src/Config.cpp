@@ -10,8 +10,12 @@
 #include "roll/Roll.h"
 
 #include <algorithm>
+#include <array>
+#include <cctype>
+#include <cstring>
 #include <format>
 #include <fstream>
+#include <mutex>
 #include <string>
 #include <utility>
 #include <vector>
@@ -54,9 +58,8 @@ namespace
     int  g_weaponChargeCost = 10;
     int  g_weaponChargeCostPerPoint = 2;
 
-    // Indexed by roll::Band. White is a placeholder that is never read: a white
-    // item carries no enchantment, so there is nothing to charge.
-    std::uint16_t g_weaponChargeAmount[roll::kBandCount] = { 0, 1000, 1500, 2000, 2500, 3000 };
+    // Indexed by roll::PowerStepOf. Step 0 is a placeholder that is never read.
+    std::uint16_t g_weaponChargeAmount[roll::kPowerSteps] = { 0, 1000, 1500, 2000, 2500, 3000 };
 
     bool          g_wielderBuffs = true;
 
@@ -73,7 +76,17 @@ namespace
     bool  g_vendorStock = true;
     bool  g_priceHook = true;
     bool  g_sellPricesScaled = false;
-    float g_priceMult[roll::kBandCount] = { 1.0f, 1.5f, 2.0f, 3.0f, 5.0f, 10.0f };
+    float g_priceMult[roll::kPowerSteps] = { 1.0f, 1.5f, 2.0f, 3.0f, 5.0f, 10.0f };
+
+    bool  g_replaceVanilla = true;
+    bool  g_dropMultAuto = true;
+    float g_dropMultOverride = 1.0f;
+    float g_dropPerDifficulty = 0.15f;
+
+    // Rarity weights per curve band, -1 = keep the curve's own (1.2.0) split.
+    std::array<std::array<int, 3>, 4> g_rarityWeights{ { { -1, -1, -1 }, { -1, -1, -1 },
+        { -1, -1, -1 }, { -1, -1, -1 } } };
+    constexpr int kRarityBandLevels[4]{ 1, 12, 25, 40 };
 
     int              g_fifthMinLevel = 35;
     int              g_sixthMinLevel = 40;
@@ -88,10 +101,25 @@ namespace
 
     constexpr const char* kOrbWeightKeys[roll::kOrbCount]{ "orbweighttransmute",
         "orbweightaugment", "orbweightalchemy", "orbweightexalt", "orbweightchaos",
-        "orbweightscour", "orbweightdivine", "orbweightvaal" };
+        "orbweightscour", "orbweightdivine", "orbweightvaal", "orbweightregal" };
     constexpr const char* kOrbWeightNames[roll::kOrbCount]{ "OrbWeightTransmute",
         "OrbWeightAugment", "OrbWeightAlchemy", "OrbWeightExalt", "OrbWeightChaos",
-        "OrbWeightScour", "OrbWeightDivine", "OrbWeightVaal" };
+        "OrbWeightScour", "OrbWeightDivine", "OrbWeightVaal", "OrbWeightRegal" };
+
+    constexpr std::uint32_t Rgba(std::uint8_t a_r, std::uint8_t a_g, std::uint8_t a_b)
+    {
+        return (0xFFu << 24) | (std::uint32_t{ a_b } << 16) | (std::uint32_t{ a_g } << 8) | a_r;
+    }
+
+    // Path of Exile's item-name colours, near enough: white, blue, yellow, the
+    // currency's sandy gold, and corrupted red.
+    std::array<std::uint32_t, static_cast<std::size_t>(Config::RarityColour::kCount)> g_rarityColor{
+        Rgba(200, 200, 200), Rgba(136, 136, 255), Rgba(255, 255, 119), Rgba(215, 180, 95),
+        Rgba(210, 40, 40)
+    };
+    std::once_flag g_rarityColorOnce;
+    constexpr const char* kRarityColorKeys[]{ "raritycolornormal", "raritycolormagic",
+        "raritycolorrare", "raritycolorcurrency", "raritycolorcorrupted" };
 
     std::string Trim(std::string a_text)
     {
@@ -133,17 +161,77 @@ namespace
         }
     }
 
+    // "RRGGBB" or "#RRGGBB" -> ImU32. False and nothing written on a bad value.
+    bool ParseHexColour(std::string a_value, std::uint32_t& a_out)
+    {
+        if (!a_value.empty() && a_value[0] == '#') {
+            a_value.erase(0, 1);
+        }
+        if (a_value.size() != 6) {
+            return false;
+        }
+        unsigned value = 0;
+        for (const char ch : a_value) {
+            const int digit = std::isdigit(static_cast<unsigned char>(ch)) ? ch - '0'
+                              : std::isxdigit(static_cast<unsigned char>(ch))
+                                  ? std::tolower(static_cast<unsigned char>(ch)) - 'a' + 10
+                                  : -1;
+            if (digit < 0) {
+                return false;
+            }
+            value = (value << 4) | static_cast<unsigned>(digit);
+        }
+        a_out = Rgba(static_cast<std::uint8_t>(value >> 16), static_cast<std::uint8_t>(value >> 8),
+            static_cast<std::uint8_t>(value));
+        return true;
+    }
+
+    // Lower-cased key -> value for every line of the file. Used by the early
+    // rarity-colour read, which must not touch anything else Load() sets.
+    std::vector<std::pair<std::string, std::string>> ReadPairs()
+    {
+        std::vector<std::pair<std::string, std::string>> out;
+        std::ifstream                                    file{ kPath };
+        std::string                                      line;
+        while (file && std::getline(file, line)) {
+            const auto trimmed = Trim(line);
+            if (trimmed.empty() || trimmed[0] == '#' || trimmed[0] == ';' || trimmed[0] == '[') {
+                continue;
+            }
+            const auto eq = trimmed.find('=');
+            if (eq == std::string::npos) {
+                continue;
+            }
+            auto key = Trim(trimmed.substr(0, eq));
+            std::transform(key.begin(), key.end(), key.begin(),
+                [](unsigned char a_ch) { return static_cast<char>(std::tolower(a_ch)); });
+            out.emplace_back(std::move(key), Trim(trimmed.substr(eq + 1)));
+        }
+        return out;
+    }
+
+    void LoadRarityColours()
+    {
+        for (const auto& [key, value] : ReadPairs()) {
+            for (std::size_t i = 0; i < std::size(kRarityColorKeys); ++i) {
+                if (key == kRarityColorKeys[i] && !ParseHexColour(value, g_rarityColor[i])) {
+                    logger::warn("{}: {} = '{}' is not RRGGBB; keeping the default", kPath, key, value);
+                }
+            }
+        }
+    }
+
     // Reads one band's charge amount off an INI line. Sixteen bits is the
     // engine's own ceiling on an instance's charge.
-    void ReadPriceMult(roll::Band a_band, const std::string& a_value)
+    void ReadPriceMult(int a_step, const std::string& a_value)
     {
-        auto& slot = g_priceMult[static_cast<int>(a_band)];
+        auto& slot = g_priceMult[a_step];
         slot = AsFloat(a_value, slot, 0.01f, 1000.0f);
     }
 
-    void ReadChargeAmount(roll::Band a_band, const std::string& a_value)
+    void ReadChargeAmount(int a_step, const std::string& a_value)
     {
-        auto& slot = g_weaponChargeAmount[static_cast<int>(a_band)];
+        auto& slot = g_weaponChargeAmount[a_step];
         slot = static_cast<std::uint16_t>(
             AsFloat(a_value, static_cast<float>(slot), 1.0f, 65535.0f));
     }
@@ -217,15 +305,15 @@ void Config::Load()
         } else if (key == "weaponcharge") {
             g_weaponCharge = AsBool(value);
         } else if (key == "weaponchargeblue") {
-            ReadChargeAmount(roll::Band::kBlue, value);
+            ReadChargeAmount(1, value);
         } else if (key == "weaponchargeyellow") {
-            ReadChargeAmount(roll::Band::kYellow, value);
+            ReadChargeAmount(2, value);
         } else if (key == "weaponchargepurple") {
-            ReadChargeAmount(roll::Band::kPurple, value);
+            ReadChargeAmount(3, value);
         } else if (key == "weaponchargeorange") {
-            ReadChargeAmount(roll::Band::kOrange, value);
+            ReadChargeAmount(4, value);
         } else if (key == "weaponchargered") {
-            ReadChargeAmount(roll::Band::kRed, value);
+            ReadChargeAmount(5, value);
         } else if (key == "weaponchargecost") {
             g_weaponChargeCost = static_cast<int>(AsFloat(value, 10.0f, 1.0f, 10000.0f));
         } else if (key == "weaponchargecostperpoint") {
@@ -249,15 +337,15 @@ void Config::Load()
         } else if (key == "pricehook") {
             g_priceHook = AsBool(value);
         } else if (key == "pricemultblue") {
-            ReadPriceMult(roll::Band::kBlue, value);
+            ReadPriceMult(1, value);
         } else if (key == "pricemultyellow") {
-            ReadPriceMult(roll::Band::kYellow, value);
+            ReadPriceMult(2, value);
         } else if (key == "pricemultpurple") {
-            ReadPriceMult(roll::Band::kPurple, value);
+            ReadPriceMult(3, value);
         } else if (key == "pricemultorange") {
-            ReadPriceMult(roll::Band::kOrange, value);
+            ReadPriceMult(4, value);
         } else if (key == "pricemultred") {
-            ReadPriceMult(roll::Band::kRed, value);
+            ReadPriceMult(5, value);
         } else if (key == "fifthaffixminlevel") {
             g_fifthMinLevel = static_cast<int>(AsFloat(value, 35.0f, 1.0f, 255.0f));
         } else if (key == "sixthaffixminlevel") {
@@ -269,7 +357,70 @@ void Config::Load()
         } else if (key == "vaalweightvalues") {
             g_vaal.weightValues = static_cast<int>(AsFloat(value, 1.0f, 0.0f, 1000.0f));
         } else if (key == "vaalweightimplicit") {
-            g_vaal.weightImplicit = static_cast<int>(AsFloat(value, 1.0f, 0.0f, 1000.0f));
+            // 1.2.0's "add the implicit" outcome. Every item has one now, so
+            // the outcome became VaalAddImplicitChance (a second implicit).
+            logger::warn("{}: VaalWeightImplicit is gone in 2.1.0 (every item has an implicit "
+                         "now); use VaalAddImplicitChance. Ignored.", kPath);
+        } else if (key == "vaaladdimplicitchance") {
+            g_vaal.addImplicitChance = AsFloat(value, 0.25f, 0.0f, 1.0f);
+        } else if (key == "replacevanillaenchants") {
+            g_replaceVanilla = AsBool(value);
+        } else if (key.rfind("raritycolor", 0) == 0) {
+            bool known = false;
+            for (std::size_t i = 0; i < std::size(kRarityColorKeys); ++i) {
+                known = known || key == kRarityColorKeys[i];
+            }
+            if (!known) {
+                logger::warn("{}: unknown setting '{}'", kPath, key);
+                continue;
+            }
+            // Read by LoadRarityColours, which the grid may already have run.
+        } else if (key.rfind("rarityweightslevel", 0) == 0) {
+            const int level = std::atoi(key.c_str() + std::strlen("rarityweightslevel"));
+            int       band = -1;
+            for (int b = 0; b < 4; ++b) {
+                if (kRarityBandLevels[b] == level) {
+                    band = b;
+                }
+            }
+            std::array<int, 3> w{ -1, -1, -1 };
+            int                parsed = 0;
+            std::string        token;
+            for (std::size_t i = 0; i <= value.size(); ++i) {
+                if (i == value.size() || value[i] == ',') {
+                    if (parsed < 3) {
+                        w[static_cast<std::size_t>(parsed)] =
+                            static_cast<int>(AsFloat(Trim(token), 0.0f, 0.0f, 100000.0f));
+                    }
+                    ++parsed;
+                    token.clear();
+                } else {
+                    token += value[i];
+                }
+            }
+            if (band < 0 || parsed != 3) {
+                logger::warn("{}: {} wants three numbers (normal,magic,rare) and a level of 1, 12, "
+                             "25 or 40; ignored", kPath, key);
+                continue;
+            }
+            g_rarityWeights[static_cast<std::size_t>(band)] = w;
+        } else if (key == "dropquantitymultiplier") {
+            std::string mode = value;
+            std::transform(mode.begin(), mode.end(), mode.begin(),
+                [](unsigned char a_ch) { return static_cast<char>(std::tolower(a_ch)); });
+            if (mode == "auto" || mode.empty()) {
+                g_dropMultAuto = true;
+            } else {
+                const float parsed = AsFloat(value, 1.0f, -1000.0f, 20.0f);
+                if (parsed < 1.0f) {
+                    logger::warn("{}: DropQuantityMultiplier {} is below 1.0; clamped to 1.0",
+                        kPath, parsed);
+                }
+                g_dropMultAuto = false;
+                g_dropMultOverride = (std::max)(1.0f, parsed);
+            }
+        } else if (key == "dropquantityperdifficulty") {
+            g_dropPerDifficulty = AsFloat(value, 0.15f, 0.0f, 2.0f);
         } else if (key == "vaalweightreroll") {
             g_vaal.weightReroll = static_cast<int>(AsFloat(value, 1.0f, 0.0f, 1000.0f));
         } else if (key == "orbdrops") {
@@ -349,11 +500,29 @@ void Config::Load()
     roll::SetAffixCaps(g_maxPrefixes, g_maxSuffixes);
     roll::SetAffixLevelGates(g_fifthMinLevel, g_sixthMinLevel);
     roll::SetDefaultVaalRules(g_vaal);
+    {
+        auto bands = roll::DefaultBands();
+        for (std::size_t b = 0; b < bands.size() && b < g_rarityWeights.size(); ++b) {
+            const auto& w = g_rarityWeights[b];
+            if (w[0] >= 0 && w[1] >= 0 && w[2] >= 0) {
+                roll::SetRarityWeights(bands[b], w[0], w[1], w[2]);
+            }
+        }
+        roll::SetDefaultBands(std::move(bands));
+        for (const auto& band : roll::DefaultBands()) {
+            const auto w = roll::RarityWeightsOf(band);
+            logger::info("{}: rarity weights at level {}: normal {} / magic {} / rare {}", kPath,
+                band.level, w[0], w[1], w[2]);
+        }
+    }
+    LoadRarityColours();
     logger::info("{}: affixes {} prefix + {} suffix, fifth from level {}, sixth from {}; Vaal "
-                 "{} (weights {}/{}/{}/{}); orb drops {} ({}, orbs {}), cleanup after {} day(s)",
+                 "{} (second implicit {:.0f}%, then destroy/values/reroll {}/{}/{}); orb drops {} ({}, "
+        "orbs {}), cleanup after {} day(s)",
         kPath, g_maxPrefixes, g_maxSuffixes, roll::DefaultFifthAffixMinLevel(),
         roll::DefaultSixthAffixMinLevel(), g_vaal.canDestroy ? "can destroy" : "never destroys",
-        g_vaal.weightDestroy, g_vaal.weightValues, g_vaal.weightImplicit, g_vaal.weightReroll,
+        100.0f * g_vaal.addImplicitChance, g_vaal.weightDestroy, g_vaal.weightValues,
+        g_vaal.weightReroll,
         g_orbDrops ? "on" : "OFF", Config::GearModeName(g_gearMode),
         g_orbsInCorpse ? "in the corpse" : "by gear mode", g_orbCleanupDays);
 
@@ -365,12 +534,10 @@ void Config::Load()
         g_tierMarker.empty() ? std::string{ "(none)" } : "'" + g_tierMarker + "'",
         g_tierMarkerInName ? "in item names" : "on hover only (names left alone)",
         g_containerLoot,
-        g_weaponCharge ? std::format("ON ({}/{}/{}/{}/{} charge blue..red, {} + {}/point per hit)",
-                             g_weaponChargeAmount[static_cast<int>(roll::Band::kBlue)],
-                             g_weaponChargeAmount[static_cast<int>(roll::Band::kYellow)],
-                             g_weaponChargeAmount[static_cast<int>(roll::Band::kPurple)],
-                             g_weaponChargeAmount[static_cast<int>(roll::Band::kOrange)],
-                             g_weaponChargeAmount[static_cast<int>(roll::Band::kRed)],
+        g_weaponCharge ? std::format("ON ({}/{}/{}/{}/{} charge by power step, {} + {}/point per hit)",
+                             g_weaponChargeAmount[1], g_weaponChargeAmount[2],
+                             g_weaponChargeAmount[3], g_weaponChargeAmount[4],
+                             g_weaponChargeAmount[5],
                              g_weaponChargeCost, g_weaponChargeCostPerPoint)
                        : std::string{ "off (affixes never drain)" });
 }
@@ -430,13 +597,12 @@ bool Config::VendorStockEnabled()
     return g_vendorStock;
 }
 
-float Config::PriceMult(roll::Band a_band)
+float Config::PriceMult(int a_powerStep)
 {
-    const auto index = static_cast<int>(a_band);
-    if (index < 0 || index >= roll::kBandCount) {
+    if (a_powerStep < 0 || a_powerStep >= roll::kPowerSteps) {
         return 1.0f;
     }
-    return g_priceMult[index];
+    return g_priceMult[a_powerStep];
 }
 
 bool Config::SellPricesScaled()
@@ -449,14 +615,36 @@ bool Config::PriceHookEnabled()
     return g_priceHook;
 }
 
-std::uint16_t Config::WeaponChargeAmount(roll::Band a_band)
+std::uint16_t Config::WeaponChargeAmount(int a_powerStep)
 {
-    const auto index = static_cast<int>(a_band);
-    if (index < 0 || index >= roll::kBandCount) {
+    if (a_powerStep < 0 || a_powerStep >= roll::kPowerSteps) {
         return 0;
     }
-    return g_weaponChargeAmount[index];
+    return g_weaponChargeAmount[a_powerStep];
 }
+
+std::uint32_t Config::RarityColor(RarityColour a_which)
+{
+    // ★The grid asks at kPostLoad, before Load(); the first ask reads just
+    // this section. Load() reads it again, so an edit plus a reload works too.
+    std::call_once(g_rarityColorOnce, []() { LoadRarityColours(); });
+    const auto i = static_cast<std::size_t>(a_which);
+    return i < g_rarityColor.size() ? g_rarityColor[i] : 0u;
+}
+
+bool Config::ReplaceVanillaEnchants()
+{
+    return g_replaceVanilla;
+}
+
+bool Config::DropMultiplierAuto() { return g_dropMultAuto; }
+void Config::SetDropMultiplierAuto(bool a_auto) { g_dropMultAuto = a_auto; }
+float Config::DropMultiplierOverride() { return g_dropMultOverride; }
+void Config::SetDropMultiplierOverride(float a_value)
+{
+    g_dropMultOverride = std::clamp(a_value, 1.0f, 20.0f);
+}
+float Config::DropQuantityPerDifficulty() { return g_dropPerDifficulty; }
 
 int Config::WeaponChargeCost()
 {
@@ -514,6 +702,9 @@ void Config::ResetDrops()
     g_drops = roll::DropTuning{};
     g_orbCleanupDays = 3;
     g_orbDropNotify = false;
+    g_dropMultAuto = true;
+    g_dropMultOverride = 1.0f;
+    g_dropPerDifficulty = 0.15f;
     Load();
 }
 
@@ -531,6 +722,9 @@ bool Config::SaveDrops()
         { "OrbMaxCount", std::format("{:.1f}", g_drops.maxCount) },
         { "OrbCleanupDays", std::to_string(g_orbCleanupDays) },
         { "OrbDropNotify", g_orbDropNotify ? "1" : "0" },
+        { "DropQuantityMultiplier", g_dropMultAuto ? std::string{ "Auto" }
+                                                   : std::format("{:.2f}", g_dropMultOverride) },
+        { "DropQuantityPerDifficulty", std::format("{:.2f}", g_dropPerDifficulty) },
     };
     for (int i = 0; i < roll::kOrbCount; ++i) {
         keys.emplace_back(kOrbWeightNames[i], std::to_string(g_drops.weights[static_cast<std::size_t>(i)]));

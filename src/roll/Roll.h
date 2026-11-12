@@ -100,11 +100,13 @@ namespace roll
     // fifth and sixth only arrive at Tuning::fifthAffixMinLevel and
     // sixthAffixMinLevel.
     //
-    // An IMPLICIT is a separate slot OUTSIDE that cap: one stronger affix tied
-    // to the kind of item (a ring's resistance, a weapon's elemental damage).
-    // Nothing rolls one any more -- a Vaal Orb's corruption is the only way an
-    // item gains it -- so a finished item can read "6 + implicit". Items rolled
-    // by 1.1/1.2, where the implicit was the fifth slot, keep theirs.
+    // An IMPLICIT is a separate slot OUTSIDE that cap: an affix tied to the
+    // kind of item (a ring's resistance, a weapon's elemental damage), the
+    // base's own property. Since 2.1.0 every craftable item rolls exactly one
+    // when it is made -- a white item included -- and implicits replace the
+    // vanilla enchantments new items used to carry. A Vaal Orb may add a
+    // second (kMaxImplicits). No other orb touches an implicit's presence;
+    // Scouring keeps them and Divine rerolls their values.
     //
     // The kind is the CSV's eighteenth column. A table without it -- an add-on
     // written before the column existed -- gets one from the affix's category
@@ -182,10 +184,11 @@ namespace roll
     // curve, the harness's histogram -- reads these rather than repeating the
     // number, so the fifth affix was a change here and not a hunt.
     //
-    // Six EXPLICIT affixes (three prefixes, three suffixes) and one implicit
-    // slot beside them, so the point total tops out at seven affixes' worth.
+    // Six EXPLICIT affixes (three prefixes, three suffixes) and up to two
+    // implicits beside them (one from creation, a second only from a Vaal
+    // Orb), so the point total tops out at eight affixes' worth.
     inline constexpr int kMaxAffixes = 6;
-    inline constexpr int kMaxImplicits = 1;
+    inline constexpr int kMaxImplicits = 2;
     inline constexpr int kMaxAffixPoints = 3;
     inline constexpr int kMaxTier = (kMaxAffixes + kMaxImplicits) * kMaxAffixPoints;  // 21
 
@@ -197,15 +200,21 @@ namespace roll
     [[nodiscard]] int DefaultFifthAffixMinLevel() noexcept;
     [[nodiscard]] int DefaultSixthAffixMinLevel() noexcept;
 
-    // What a Vaal Orb may do (Craft.h). Weights are relative; an outcome the
-    // item cannot take is left out of the draw.
+    // What a Vaal Orb may do (Craft.h).
+    //
+    // addImplicitChance is drawn FIRST: that share of Vaal uses tries to add a
+    // second implicit (a no-op, never an error, when the item has no first
+    // implicit, already has two, or no valid one is left). The rest is split
+    // between destroy / values / reroll by their relative weights; an outcome
+    // the item cannot take is left out of that draw. The 0.25 default keeps
+    // the 1.2.0 split of 25% each when all four apply.
     struct VaalRules
     {
-        bool canDestroy{ true };
-        int  weightDestroy{ 1 };
-        int  weightValues{ 1 };
-        int  weightImplicit{ 1 };
-        int  weightReroll{ 1 };
+        bool  canDestroy{ true };
+        int   weightDestroy{ 1 };
+        int   weightValues{ 1 };
+        int   weightReroll{ 1 };
+        float addImplicitChance{ 0.25f };
     };
     void SetDefaultVaalRules(const VaalRules& a_rules) noexcept;
     [[nodiscard]] VaalRules DefaultVaalRules() noexcept;
@@ -220,6 +229,12 @@ namespace roll
         std::array<int, kMaxAffixPoints>   tierWeights{};        // tier I..III
     };
 
+    // The count curve every default-constructed Tuning starts from. Process-
+    // wide like the caps; DiabloLoot.ini [Rarity] rescales it once on load
+    // (SetRarityWeights). Not thread-safe to SET: once, at load.
+    [[nodiscard]] std::vector<Curve> DefaultBands();
+    void                           SetDefaultBands(std::vector<Curve> a_bands);
+
     struct Tuning
     {
         // Bands are interpolated between, so the curve is smooth rather than
@@ -232,12 +247,7 @@ namespace roll
         //
         // The level-40 band's 6 + 2 is the 8 the single fifth-affix weight used
         // to be, so the share of items with five OR MORE affixes is unchanged.
-        std::vector<Curve> bands{
-            { 1, { 55, 30, 12, 3, 0, 0, 0 }, { 80, 18, 2 } },
-            { 12, { 30, 33, 24, 11, 2, 0, 0 }, { 55, 35, 10 } },
-            { 25, { 15, 27, 30, 20, 8, 0, 0 }, { 32, 43, 25 } },
-            { 40, { 6, 16, 28, 26, 16, 6, 2 }, { 18, 40, 42 } },
-        };
+        std::vector<Curve> bands{ DefaultBands() };
 
         // The item level below which a fifth affix cannot roll, whatever the
         // curve says. Red -- the five-star band -- needs thirteen points, and
@@ -256,11 +266,25 @@ namespace roll
         // What a Vaal Orb may do; from DiabloLoot.ini through SetDefaultVaalRules.
         VaalRules vaal{ DefaultVaalRules() };
 
+        // Whether a roll adds the item's base implicit. On for every roll site;
+        // the harness turns it off to compare against the 1.2.0 explicit-only
+        // stream.
+        bool rollImplicit{ true };
+
         // NPCs roll the same curve as the player (your decision), but the hook
         // is here so an NPC-only ceiling is a one-line change rather than a
         // refactor. At kMaxTier it is no ceiling at all.
         int npcMaxTier{ kMaxTier };
     };
+
+    // ★RARITY WEIGHTS ARE A VIEW ONTO THE COUNT CURVE, not a second curve. A
+    // drop first picks normal / magic / rare, then how many mods inside it;
+    // that is exactly the count curve grouped as {0}, {1,2}, {3..6}. Reading
+    // them out and writing them back (DiabloLoot.ini [Rarity]) rescales a
+    // group while keeping the split inside it, so the 1.2.0 defaults give
+    // the same mean mod count they always did.
+    [[nodiscard]] std::array<int, 3> RarityWeightsOf(const Curve& a_band) noexcept;
+    void SetRarityWeights(Curve& a_band, int a_normal, int a_magic, int a_rare) noexcept;
 
     // ------------------------------------------------------------- the result
     struct RolledAffix
@@ -291,6 +315,7 @@ namespace roll
             return Count(AffixKind::kPrefix) + Count(AffixKind::kSuffix);
         }
         [[nodiscard]] bool HasImplicit() const noexcept { return Count(AffixKind::kImplicit) > 0; }
+        [[nodiscard]] int  Implicits() const noexcept { return Count(AffixKind::kImplicit); }
     };
 
     struct RollContext
@@ -348,6 +373,15 @@ namespace roll
     // told apart again), and any kind whose cap the item has reached.
     void FitPool(std::vector<const Affix*>& a_pool, const RolledItem& a_item);
 
+    // The same with explicit caps: a MAGIC item is capped at one prefix and one
+    // suffix whatever the INI's rare caps say.
+    void FitPool(std::vector<const Affix*>& a_pool, const RolledItem& a_item, int a_maxPrefixes,
+        int a_maxSuffixes);
+
+    // Narrows an IMPLICIT pool to what still fits: no implicit twice, none
+    // sharing a mod group (and so a magic effect) with anything on the item.
+    void FitImplicitPool(std::vector<const Affix*>& a_pool, const RolledItem& a_item);
+
     // The tier curve at one item level, interpolated as Roll interpolates it.
     [[nodiscard]] std::array<int, kMaxAffixPoints> TierWeightsFor(const Tuning& a_tuning,
         int a_itemLevel);
@@ -362,31 +396,51 @@ namespace roll
     Draw DrawAffix(std::vector<const Affix*>& a_pool, const RollContext& a_ctx,
         const std::array<int, kMaxAffixPoints>& a_tierWeights, Rng& a_rng, RolledAffix& a_out);
 
-    // 0 white, 1-3 blue, 4-6 yellow, 7-9 purple, 10-12 orange, 13 and up red.
+    // ------------------------------------------------------------- rarity
     //
-    // Red needs at least five affixes on the item -- four at Tier III stop at
-    // twelve -- and a fifth explicit only arrives at or above
-    // Tuning::fifthAffixMinLevel. Both gates fall out of the arithmetic rather
-    // than being checked here, which is why BandOf still takes just the tier.
-    // (A corrupted item's implicit counts toward the total like any affix.)
-    enum class Band
+    // ★PATH OF EXILE'S RULE: RARITY IS THE EXPLICIT COUNT, and nothing stores
+    // it. 0 mods normal (white), 1-2 magic (blue, at most one prefix and one
+    // suffix), 3-6 rare (yellow, at most MaxPrefixes + MaxSuffixes). Implicits
+    // do not count. Tiers I-III are the quality of one affix and no longer
+    // decide colour. Corruption overrides the colour (red) but not the rarity.
+    //
+    // 0 is reserved for "no opinion" (not ours), so the codes start at 1. The
+    // co-save's per-enchantment byte packs three things a hot path needs:
+    //   bits 0-1  rarity (1 normal, 2 magic, 3 rare)
+    //   bits 2-4  power step (PowerStepOf the point sum; prices and charge)
+    //   bit  7    corrupted
+    enum class Rarity : std::uint8_t
     {
-        kWhite,
-        kBlue,
-        kYellow,
-        kPurple,
-        kOrange,
-        kRed
+        kNone = 0,
+        kNormal = 1,
+        kMagic = 2,
+        kRare = 3,
     };
 
-    inline constexpr int kBandCount = static_cast<int>(Band::kRed) + 1;
+    inline constexpr std::uint8_t kRarityCorruptedBit = 0x80;
+    inline constexpr int          kMagicMaxPrefixes = 1;
+    inline constexpr int          kMagicMaxSuffixes = 1;
+    inline constexpr int          kRareMinMods = 3;
 
-    [[nodiscard]] Band        BandOf(int a_tier) noexcept;
-    [[nodiscard]] const char* BandName(Band a_band) noexcept;
+    [[nodiscard]] Rarity      RarityOf(int a_explicits) noexcept;
+    [[nodiscard]] Rarity      RarityOf(const RolledItem& a_item) noexcept;
+    [[nodiscard]] const char* RarityName(Rarity a_rarity) noexcept;   // "magic"
+    // The byte the co-save and the colour code carry (layout above).
+    [[nodiscard]] std::uint8_t RarityCode(const RolledItem& a_item) noexcept;
+    [[nodiscard]] Rarity       RarityFromCode(std::uint8_t a_code) noexcept;
+    [[nodiscard]] bool         CorruptedFromCode(std::uint8_t a_code) noexcept;
+    [[nodiscard]] int          PowerStepFromCode(std::uint8_t a_code) noexcept;
+
+    // ★THE POINT SUM IS STILL A POWER BUDGET, just not a colour. Merchant
+    // prices and weapon charge scale with it in five steps (1-3, 4-6, 7-9,
+    // 10-12, 13+); 0 for a plain item. Named for what it is so nobody mistakes
+    // it for the rarity again.
+    inline constexpr int kPowerSteps = 6;   // 0..5
+    [[nodiscard]] int PowerStepOf(int a_points) noexcept;
 
     // ------------------------------------------------------------- tier mark
-    // The glyph repeated once per band at the end of a rolled item's name: one
-    // for blue, five for red. Defaults to U+25C6 BLACK DIAMOND.
+    // The glyph trailing a rolled item's name: once for magic, twice for rare,
+    // never for normal. Defaults to U+25C6 BLACK DIAMOND.
     //
     // HANDED IN, NOT BAKED IN. Which glyph actually draws depends on the
     // player's fonts and menu replacers, which is not something this file can
@@ -400,15 +454,9 @@ namespace roll
 
     [[nodiscard]] std::string_view TierMark() noexcept;
 
-    // The marker for one band, ready to draw: the mark repeated once per band,
-    // so blue gets one and red five. Empty for a white item, and empty when
-    // the mark itself is empty.
-    //
-    // TAKES A BAND, NOT A TIER, and that is the useful shape rather than an
-    // arbitrary one. Persisted state records the band -- the raw tier is a
-    // roll-time quantity that does not survive the save -- so anything asking
-    // about an item already in the world has a Band and nothing else.
-    [[nodiscard]] std::string BandMark(Band a_band);
+    // The marker for one rarity, ready to draw: one mark for magic, two for
+    // rare. Empty for normal, and empty when the mark itself is empty.
+    [[nodiscard]] std::string RarityMark(Rarity a_rarity);
 
     // Whether Name() appends the marker to the item's stored name.
     //
@@ -416,7 +464,7 @@ namespace roll
     // the sort key of every inventory list, it is what a narrow barter column
     // truncates, and it is written into the save as a per-instance name
     // override. Whether that is worth paying depends on what else is drawing
-    // the band -- with Grid Inventory installed the tint already says it, and
+    // the rarity -- with Grid Inventory installed the tint already says it, and
     // the glyphs are redundant.
     void               SetTierMarkInName(bool a_enabled) noexcept;
     [[nodiscard]] bool TierMarkInName() noexcept;

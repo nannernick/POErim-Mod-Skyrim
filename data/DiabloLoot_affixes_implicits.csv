@@ -1,16 +1,15 @@
-# Implicit affixes -- the last affix slot, one per item, tied to the kind of item.
+# Implicit affixes -- the base property of each kind of item. Since 2.1.0 every
+# weapon, armour and piece of jewellery rolls exactly ONE of these when it is made
+# (white items too); they replace vanilla enchantments and sit outside the 3 + 3
+# mod cap. A Vaal Orb may add a second (never a duplicate, never one sharing a
+# magic effect with something on the item). Scouring keeps them; Divine rerolls
+# their values; corruption locks them.
 #
 # Merged on top of DiabloLoot_affixes.csv like any DiabloLoot_affixes_*.csv add-on.
-# An item rolls an implicit only when it rolls its fifth affix, which only happens
-# at item level 35 and up (fifthAffixMinLevel), and an Exalted Orb adds one to an
-# item whose two prefixes and two suffixes are full. Chaos keeps it; Scouring
-# removes it.
 #
 # Implicits are STRONGER than the same effect as a prefix or suffix: these rows are
-# the explicit ranges times 1.5. Points per tier are unchanged, so the colour bands
-# work as before. An item never carries an implicit and an explicit with the same
-# magic effect. Every item kind has three to choose from, so an item's own
-# prefixes and suffixes can never use up all of its options.
+# the explicit ranges times 1.5. An item never carries an implicit and a mod with
+# the same magic effect. Every item kind has at least one row from level 1.
 #
 # The last column, type, must say implicit. Edit values freely; to add one, copy
 # a row, give it a new 

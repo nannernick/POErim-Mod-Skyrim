@@ -51,6 +51,18 @@ namespace Orbs
     // Removes ground orbs older than OrbCleanupDays. GAME THREAD.
     std::size_t Cleanup(bool a_all = false);
 
+    // The mesh the orb form carries now, and whether it is a vanilla cut gem.
+    [[nodiscard]] std::string ModelOf(roll::Orb a_orb);
+    [[nodiscard]] bool        IsGemMesh(const std::string& a_model);
+
+    // Drop quantity by difficulty. Last* is what the last kill used; Preview
+    // is what the next one would (from the difficulty last read). Refresh
+    // re-reads the difficulty -- GAME THREAD only.
+    [[nodiscard]] float LastDropMultiplier();
+    [[nodiscard]] int   LastDifficulty();
+    [[nodiscard]] float PreviewDropMultiplier();
+    void                RefreshDifficulty();
+
     struct Stats
     {
         std::uint64_t deaths{ 0 };

@@ -25,8 +25,8 @@
 
 namespace Poerim
 {
-    inline constexpr std::uint16_t kMajor = 1;
-    inline constexpr std::uint16_t kMinor = 2;
+    inline constexpr std::uint16_t kMajor = 2;
+    inline constexpr std::uint16_t kMinor = 1;
     inline constexpr std::uint16_t kPatch = 0;
 
     inline constexpr const char* kDisplayName = "POErim";

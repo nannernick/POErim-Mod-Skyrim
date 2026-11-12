@@ -97,6 +97,8 @@ set(SOURCES
     src/ui/Fallback.cpp
     src/ui/WinManager.h
     src/ui/WinManager.cpp
+    src/ui/CurrencyPouch.h
+    src/ui/CurrencyPouch.cpp
     src/ui/Grid.h
     src/ui/Grid.cpp
     src/ui/LootBarter.h

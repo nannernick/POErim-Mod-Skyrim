@@ -150,6 +150,35 @@ namespace roll
         return GateStorage(true);
     }
 
+    namespace
+    {
+        // The 1.2.0 count curve. The last two count weights are the FIFTH and
+        // SIXTH affix: zero below the level-40 band on purpose, and the level
+        // floors in Roll() are what make sure no interpolated sliver lands.
+        std::vector<Curve>& BandStorage()
+        {
+            static std::vector<Curve> bands{
+                { 1, { 55, 30, 12, 3, 0, 0, 0 }, { 80, 18, 2 } },
+                { 12, { 30, 33, 24, 11, 2, 0, 0 }, { 55, 35, 10 } },
+                { 25, { 15, 27, 30, 20, 8, 0, 0 }, { 32, 43, 25 } },
+                { 40, { 6, 16, 28, 26, 16, 6, 2 }, { 18, 40, 42 } },
+            };
+            return bands;
+        }
+    }
+
+    std::vector<Curve> DefaultBands()
+    {
+        return BandStorage();
+    }
+
+    void SetDefaultBands(std::vector<Curve> a_bands)
+    {
+        if (!a_bands.empty()) {
+            BandStorage() = std::move(a_bands);
+        }
+    }
+
     void SetDefaultVaalRules(const VaalRules& a_rules) noexcept
     {
         VaalStorage() = a_rules;

@@ -52,15 +52,25 @@ jobs:
         shell: pwsh
         run: |
           $harness = "build/Release/RollHarness.exe"
-          & $harness data/DiabloLoot_affixes.csv --samples 20000 --levels 1,25,40
+          & $harness data/DiabloLoot_affixes.csv --merge data/DiabloLoot_affixes_implicits.csv --samples 20000 --levels 1,25,40
           if ($LASTEXITCODE -ne 0) { exit 1 }
-          & $harness data/DiabloLoot_affixes.csv --samples 20000 --levels 1,25,40 --craft transmute,augment,exalt,exalt,exalt,chaos,scour
+          # Fixed checks: Regal refusals, bit-identical refusals, Chaos counts,
+          # co-save round trip (0/1/2 implicits, corrupted), difficulty mean.
+          & $harness data/DiabloLoot_affixes.csv --merge data/DiabloLoot_affixes_implicits.csv --merge data/DiabloLoot_affixes_summermyst.csv --selftest
           if ($LASTEXITCODE -ne 0) { exit 1 }
-          $out = & $harness data/DiabloLoot_affixes.csv --merge data/DiabloLoot_affixes_implicits.csv --craft "transmute,augment,exalt*4,chaos*20,divine,vaal" --level 40 --chains 5000
+          $out = & $harness data/DiabloLoot_affixes.csv --merge data/DiabloLoot_affixes_implicits.csv --craft "transmute,augment,regal,exalt*3,chaos*50,divine,vaal" --levels 1,25,34,39,40 --chains 5000
           if ($LASTEXITCODE -ne 0) { exit 1 }
           $out
-          if ($out -match "<-- BUG") { Write-Error "an orb broke a cap or a mod group"; exit 1 }
-          & $harness --drops --levels 1,20,50 --samples 20000
+          if ($out -match "<-- BUG") { Write-Error "an orb broke a rule"; exit 1 }
+          $out = & $harness data/DiabloLoot_affixes.csv --merge data/DiabloLoot_affixes_implicits.csv --craft "transmute,augment,regal,exalt*3,vaal,vaal,divine,scour,chaos" --level 40 --chains 20000 --vaal-keep
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+          if ($out -match "<-- BUG") { $out; Write-Error "the Vaal chain broke a rule"; exit 1 }
+          & $harness --drops --levels 1,20,50 --samples 20000 > drops_default.txt
+          & $harness --drops --levels 1,20,50 --samples 20000 --drop-mult 1.0 > drops_m1.txt
+          if ((Get-FileHash drops_default.txt).Hash -ne (Get-FileHash drops_m1.txt).Hash) {
+            Write-Error "--drop-mult 1.0 is not byte-identical to no multiplier"; exit 1
+          }
+          & $harness --drops --levels 20 --samples 20000 --drop-mult 1.75
           if ($LASTEXITCODE -ne 0) { exit 1 }
 
       - name: Check the plugin is the one the generator makes

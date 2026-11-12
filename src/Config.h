@@ -71,8 +71,8 @@ namespace Config
     // Useful while the affix table is being built, noise once it is settled.
     [[nodiscard]] bool VerboseSurvey();
 
-    // The glyph repeated once per band at the end of a rolled item's name --
-    // one for blue, five for red. Empty means no marker at all.
+    // The glyph trailing a rolled item's name -- once for magic, twice for
+    // rare. Empty means no marker at all.
     //
     // ★THE VALUE IS TAKEN VERBATIM, whatever it is: a diamond, a star, an
     // asterisk, a word. Which glyphs actually draw depends on the player's
@@ -109,13 +109,12 @@ namespace Config
     // direction. Turning this off again leaves the finite weapons finite.
     [[nodiscard]] bool WeaponChargeEnabled();
 
-    // The maximum charge a freshly rolled weapon carries, by the BAND it rolled
-    // -- a red starts with more in the tank than a blue, the way a better
-    // vanilla weapon ships with a bigger charge. The engine stores an
-    // instance's charge in sixteen bits, so [1, 65535]. Defaults 1000 blue,
-    // 1500 yellow, 2000 purple, 2500 orange, 3000 red. White never gets here:
-    // a white item has no enchantment to charge.
-    [[nodiscard]] std::uint16_t WeaponChargeAmount(roll::Band a_band);
+    // The maximum charge a freshly rolled weapon carries, by the POWER STEP of
+    // its point sum (roll::PowerStepOf: 1-3, 4-6, 7-9, 10-12, 13+). The INI
+    // keys still say Blue..Red because that is what they were called when the
+    // point sum was the colour; since 2.1.0 colour is rarity, and these follow
+    // the points. [1, 65535]; defaults 1000 to 3000.
+    [[nodiscard]] std::uint16_t WeaponChargeAmount(int a_powerStep);
 
     // Charge drawn per hit: a flat part plus a part per affix POINT of the roll
     // (1..15, the same sum of points that decides the band), so a blue and a
@@ -136,9 +135,9 @@ namespace Config
     [[nodiscard]] bool VendorStockEnabled();
 
     // What a merchant asks for a rolled item, as a multiple of the engine's
-    // own value, by colour band. 1 for white; the defaults climb from 1.5 for
-    // blue to 10 for red. See Pricing.h.
-    [[nodiscard]] float PriceMult(roll::Band a_band);
+    // own value, by power step (see WeaponChargeAmount for why the keys still
+    // say Blue..Red). 1 for step 0; the defaults climb from 1.5 to 10.
+    [[nodiscard]] float PriceMult(int a_powerStep);
 
     // Whether the same multiple applies to what a merchant PAYS the player.
     // Default off: a loot mod should not quietly change the player's income.
@@ -168,6 +167,32 @@ namespace Config
     [[nodiscard]] bool TooltipItemLevel();
     [[nodiscard]] bool TooltipAffixLines();
     [[nodiscard]] int  TooltipDetailKey();
+
+    // ---- rarity colours ([Rarity]) ------------------------------------------
+    //
+    // ImU32 order (0xAABBGGRR). Used by the grid tint, the tooltip and the
+    // DiabloLootAPI. ★Readable BEFORE Load(): the grid asks for its palette at
+    // kPostLoad, a step before kDataLoaded, so the first ask parses just this
+    // section of the INI on its own.
+    enum class RarityColour
+    {
+        kNormal,
+        kMagic,
+        kRare,
+        kCurrency,
+        kCorrupted,
+        kCount
+    };
+    [[nodiscard]] std::uint32_t RarityColor(RarityColour a_which);
+
+    // ---- implicits ----------------------------------------------------------
+    //
+    // Whether a vanilla- or player-enchanted GENERIC item (in a leveled list or
+    // an outfit, not a quest item, with a plain template to swap to) has its
+    // enchantment replaced by a rolled implicit on first sight, and is no
+    // longer refused by the orbs. Default on. Off: those items stay refused,
+    // as in 1.2.0, and new loot keeps its vanilla enchantments.
+    [[nodiscard]] bool ReplaceVanillaEnchants();
 
     // ---- crafting ---------------------------------------------------------
     // The fifth and sixth affix floors (FifthAffixMinLevel / SixthAffixMinLevel)
@@ -199,6 +224,18 @@ namespace Config
     void                   SetOrbCleanupDays(int a_days);
     [[nodiscard]] bool     OrbDropNotify();      // a HUD line per drop
     void                   SetOrbDropNotify(bool a_enabled);
+
+    // ---- drop quantity by difficulty ([Drops]) ------------------------------
+    //
+    // DropQuantityMultiplier = Auto (default) follows the game's difficulty:
+    // 1.0 + DropQuantityPerDifficulty x level (Novice 0 .. Legendary 5), read
+    // on the game thread at each kill. A number >= 1.0 overrides it; below
+    // 1.0 clamps to 1.0 with a log line. Applies to orb counts only.
+    [[nodiscard]] bool  DropMultiplierAuto();
+    void                SetDropMultiplierAuto(bool a_auto);
+    [[nodiscard]] float DropMultiplierOverride();
+    void                SetDropMultiplierOverride(float a_value);
+    [[nodiscard]] float DropQuantityPerDifficulty();
 
     // The live drop tuning. The debug menu edits it in place; Save writes it
     // back to DiabloLoot.ini and Reset reloads it from there.

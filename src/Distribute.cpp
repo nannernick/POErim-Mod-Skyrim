@@ -236,6 +236,7 @@ namespace
         if (!a_refr || !g_table || g_table->Empty()) {
             return;
         }
+        const Records::ReadGuard tableGuard{ Records::TableLock() };
 
         // The player is never a distribution target: their gear is what they
         // chose, and rolling it would rewrite the character's equipment on the
@@ -308,9 +309,11 @@ namespace
 
             const roll::RollContext ctx{ a_itemLevel, slots, a_forNpc };
             const auto rolled = roll::Roll(*g_table, ctx, g_tuning, ThreadRng());
+            if (rolled.Explicits() == 0) {
+                ++white;  // normal: still gets its base implicit below (2.1.0)
+            }
             if (rolled.affixes.empty()) {
-                ++white;  // a legitimate outcome, but it should be countable
-                continue;
+                continue;  // no implicit row for this kind of item either
             }
 
             const auto applied = Apply::ToItem(rolled, candidate.object, candidate.xList);
@@ -326,10 +329,9 @@ namespace
                 // rather than inside ToItem because the BAND is a presentation
                 // decision and ToItem's job is the enchantment -- and because
                 // this is where rolled.tier is already in hand.
-                Persist::NoteEnchTier(applied.enchantment->GetFormID(),
-                    static_cast<std::uint8_t>(roll::BandOf(rolled.tier)));
-                // And the roll itself, with the level it rolled at: what a
-                // crafting orb starts from, and what the tooltip explains.
+                // The roll, with the level it rolled at, and its rarity code:
+                // what a crafting orb starts from, and what the tooltip and
+                // the tint explain.
                 Records::Note(applied.enchantment->GetFormID(), rolled, a_itemLevel);
             }
         }
@@ -663,6 +665,17 @@ namespace
         }
 
         const int level = EncounterLevelFor(a_refr);
+
+        // ★NO VANILLA ENCHANTMENTS IN NEW LOOT (2.1.0): a chest's and a
+        // merchant's loose enchanted generic gear becomes the plain template.
+        // Corpses are done in the death task (Orbs.cpp) instead.
+        if (Config::ReplaceVanillaEnchants() && !a_refr->As<RE::Actor>()) {
+            (void)a_refr->GetInventoryChanges();   // the authored contents first
+            if (const int n = Apply::SwapVanillaLoose(a_refr); n > 0) {
+                logger::debug("distribute: {:08X} -- {} vanilla-enchanted item(s) became their plain "
+                              "template", a_refr->GetFormID(), n);
+            }
+        }
 
         // Stocked BEFORE the affix pass, so the bonus items are in the inventory
         // when it walks them. The other order gives the player a fuller chest of

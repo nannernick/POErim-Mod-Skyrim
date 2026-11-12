@@ -7,7 +7,9 @@
 #include "Crafting.h"
 
 #include "Apply.h"
+#include "Config.h"
 #include "GridTint.h"
+#include "LootApi.h"
 #include "Persist.h"
 #include "Records.h"
 #include "Wielder.h"
@@ -16,7 +18,9 @@
 
 #include <algorithm>
 #include <format>
+#include <mutex>
 #include <random>
+#include <set>
 
 namespace
 {
@@ -167,25 +171,82 @@ namespace
     void NoteRoll(RE::FormID a_enchantment, const roll::RolledItem& a_rolled, int a_itemLevel,
         std::uint8_t a_flags)
     {
-        Persist::NoteEnchTier(a_enchantment, static_cast<std::uint8_t>(roll::BandOf(a_rolled.tier)));
+        Persist::NoteEnchTier(a_enchantment, roll::RarityCode(a_rolled));
         Persist::NoteItemRecord(a_enchantment, roll::MakeRecord(a_rolled, a_itemLevel, a_flags));
+    }
+
+    // A fresh item's base: its implicit and nothing else, as a roll makes it.
+    roll::RolledItem BaseImplicitRoll(const roll::RollContext& a_ctx)
+    {
+        roll::Tuning tuning;
+        for (auto& band : tuning.bands) {
+            band.countWeights.fill(0);
+            band.countWeights[0] = 1;
+        }
+        const auto* table = Records::Table();
+        return table ? roll::Roll(*table, a_ctx, tuning, Rng()) : roll::RolledItem{};
     }
 
     // Makes the unit carry a_rolled -- or nothing, when a_rolled is empty.
     // a_hadOurs says whether the unit's list carries one of our enchantments
-    // now, which is the one that has to be released first.
+    // now. a_vanilla says what foreign enchantment it carries instead, which
+    // is replaced (2.1.0) rather than refused.
     Crafting::Outcome Rebuild(RE::PlayerCharacter* a_player, const Unit& a_unit, bool a_hadOurs,
-        const roll::RolledItem& a_rolled, int a_itemLevel, std::uint8_t a_flags)
+        const roll::RolledItem& a_rolled, int a_itemLevel, std::uint8_t a_flags,
+        Apply::VanillaKind a_vanilla = Apply::VanillaKind::kNone)
     {
         Crafting::Outcome outcome;
         const bool        weapon = IsWeapon(a_unit.object);
         const bool        toPlain = a_rolled.affixes.empty();
         const auto        id = a_unit.object->GetFormID();
 
+        // ---- an enchanted RECORD: back to its plain template -----------------
+        //
+        // ExtraEnchantment is inert on a record with its own EITM, so the only
+        // way to put an implicit on an "Iron Sword of Frost" is to make it an
+        // Iron Sword. The swap is remove-one, add-one of the template, and then
+        // the same drop-and-pickup a plain unit goes through. ★A worn unit is
+        // refused before this point (the swap would take it off for good).
+        if (a_vanilla == Apply::VanillaKind::kRecordEnchanted) {
+            auto* plain = Apply::PlainTemplateOf(a_unit.object);
+            if (!plain || !Apply::CanDropFrom(a_player)) {
+                outcome.message = "This item can't be changed here";
+                return outcome;
+            }
+            logger::info("craft[{:08X}]: replacing its vanilla enchantment -- swapping to the plain "
+                         "template {:08X}",
+                id, plain->GetFormID());
+            a_player->RemoveItem(a_unit.object, 1, RE::ITEM_REMOVE_REASON::kRemove, a_unit.xList, nullptr);
+            a_player->AddObjectToContainer(plain, nullptr, 1, nullptr);
+            if (toPlain) {
+                outcome.ok = true;
+                outcome.message = plain->GetName() ? plain->GetName() : "";
+                return outcome;
+            }
+            const auto applied = Apply::ToNewInstance(a_rolled, plain, a_player);
+            if (!applied) {
+                // The swap happened and the roll did not: the player has the
+                // plain template. Said so -- it is not silent loss.
+                logger::warn("craft[{:08X}]: swapped to the template, but the implicit could not be "
+                             "attached; the item is the plain {:08X}",
+                    id, plain->GetFormID());
+                outcome.message = "Its enchantment was removed, but the implicit could not be added; "
+                                  "use an orb on it again";
+                return outcome;
+            }
+            const auto enchID = applied.enchantment->GetFormID();
+            NoteRoll(enchID, a_rolled, a_itemLevel, a_flags);
+            outcome.ok = true;
+            outcome.enchantment = enchID;
+            outcome.code = roll::RarityCode(a_rolled);
+            outcome.message = applied.name;
+            return outcome;
+        }
+
         // ---- a bare stack unit: the engine has to build the instance --------
         if (!a_unit.xList) {
             if (toPlain) {
-                outcome.message = "This item has no affixes to remove";
+                outcome.message = "This item has no mods to remove";
                 return outcome;
             }
             if (!Apply::CanDropFrom(a_player)) {
@@ -208,7 +269,7 @@ namespace
             NoteRoll(enchID, a_rolled, a_itemLevel, a_flags);
             outcome.ok = true;
             outcome.enchantment = enchID;
-            outcome.band = static_cast<std::uint8_t>(roll::BandOf(a_rolled.tier));
+            outcome.code = roll::RarityCode(a_rolled);
             outcome.message = applied.name;
             return outcome;
         }
@@ -225,15 +286,14 @@ namespace
         //   to plain        off FIRST (the old enchantment keeps the list
         //                   alive), release, and put the BASE back on -- the
         //                   list is not named again after the release.
-        if (a_unit.worn && toPlain) {
-            Unequip(a_player, a_unit);
-        }
-
-        if (a_hadOurs) {
-            Apply::Release(a_unit.xList, weapon);
-        }
-
+        const bool releasable = a_hadOurs || a_vanilla == Apply::VanillaKind::kInstanceEnchanted;
         if (toPlain) {
+            if (a_unit.worn) {
+                Unequip(a_player, a_unit);
+            }
+            if (releasable) {
+                Apply::Release(a_unit.xList, weapon);
+            }
             if (a_unit.worn) {
                 Equip(a_player, a_unit, nullptr);
             }
@@ -242,14 +302,14 @@ namespace
             return outcome;
         }
 
-        const auto applied = Apply::ToItem(a_rolled, a_unit.object, a_unit.xList);
+        // ★BUILD FIRST, RELEASE AFTER (bug fix): Apply::Replace leaves the item
+        // exactly as it was when the new enchantment cannot be built.
+        const auto applied = Apply::Replace(a_rolled, a_unit.object, a_unit.xList);
         if (!applied) {
-            // The old enchantment is already released. Said plainly, in the log
-            // and to the player, because the item has lost its affixes.
-            logger::error("craft[{:08X}]: the new enchantment could not be built AFTER the old "
-                          "one was released; the item is now plain",
+            logger::error("craft[{:08X}]: the new enchantment could not be built; the item was "
+                          "left as it was",
                 id);
-            outcome.message = "The enchantment could not be built; the item is now plain";
+            outcome.message = "The enchantment could not be built; nothing changed";
             return outcome;
         }
 
@@ -263,7 +323,7 @@ namespace
 
         outcome.ok = true;
         outcome.enchantment = enchID;
-        outcome.band = static_cast<std::uint8_t>(roll::BandOf(a_rolled.tier));
+        outcome.code = roll::RarityCode(a_rolled);
         outcome.message = applied.name;
         return outcome;
     }
@@ -274,6 +334,7 @@ namespace
         // band per tile: both are told once, after the item has settled.
         Wielder::Reconcile(a_player);
         GridTint::RequestRebuild();
+        LootApi::Invalidate();
     }
 
     // ---- what both the orb and the debug edits start from ---------------------
@@ -286,6 +347,8 @@ namespace
         roll::RollContext    ctx;
         std::uint8_t         flags{ roll::kRecordNone };
         bool                 hadOurs{ false };
+        Apply::VanillaKind   vanilla{ Apply::VanillaKind::kNone };
+        bool                 granted{ false };   // Resolve gave a 1.2.0 item its implicit
     };
 
     // Fills a_out, or returns the reason the item cannot be crafted.
@@ -314,30 +377,58 @@ namespace
         a_out.ctx.itemSlots = Apply::SlotsOf(a_out.unit.object);
         a_out.ctx.forNpc = false;
 
-        if (a_target.enchantment != 0) {
+        if (a_target.enchantment != 0 && Persist::IsAffixEnch(a_target.enchantment)) {
             Records::View view;
             if (!Records::Lookup(a_out.unit.xList, view) || !view.complete) {
-                return "This item's affixes can't be read, so it can't be crafted";
+                return "This item's mods can't be read, so it can't be crafted";
             }
             a_out.rolled = view.rolled;
             a_out.ctx.itemLevel = view.record.itemLevel;
             a_out.flags = view.record.flags;
             a_out.hadOurs = true;
+            // ★A 1.2.0 ITEM WITH NO IMPLICIT gets its base implicit now, the
+            // first time it is touched, and the record says so for good.
+            if (a_out.rolled.Implicits() == 0 && (a_out.flags & roll::kRecordImplicitGranted) == 0) {
+                const auto base = BaseImplicitRoll(a_out.ctx);
+                for (const auto& rolled : base.affixes) {
+                    a_out.rolled.affixes.insert(a_out.rolled.affixes.begin(), rolled);
+                    a_out.rolled.tier += rolled.points;
+                }
+                a_out.flags = static_cast<std::uint8_t>(a_out.flags | roll::kRecordImplicitGranted);
+                a_out.granted = !base.affixes.empty();
+            }
             return nullptr;
         }
 
-        // A plain item. Only ones the loot system itself would roll: a unique
-        // or an artifact is not in any leveled list, and is left as its author
-        // made it.
-        if (!Apply::IsGeneric(a_out.unit.object)) {
-            return "Unique items can't be crafted";
+        // A plain item, or one with somebody else's enchantment. Only ones the
+        // loot system itself would roll: a unique or an artifact is in no
+        // leveled list and no outfit, and is left as its author made it.
+        a_out.vanilla = Apply::ClassifyEnchanted(a_out.unit.object, a_out.unit.xList);
+        if (a_out.vanilla == Apply::VanillaKind::kRefused) {
+            return Apply::IsGeneric(a_out.unit.object) ? "Items with an enchantment of their own can't be crafted"
+                                                      : "Unique items can't be crafted";
         }
-        if (!Apply::IsEligible(a_out.unit.object, a_out.unit.xList)) {
-            return "This item can't carry affixes";
+        if (a_out.vanilla != Apply::VanillaKind::kNone) {
+            if (!Config::ReplaceVanillaEnchants()) {
+                return "Items with an enchantment of their own can't be crafted";
+            }
+            if (a_out.unit.worn && a_out.vanilla == Apply::VanillaKind::kRecordEnchanted) {
+                return "Unequip it first";
+            }
+        } else {
+            if (!Apply::IsGeneric(a_out.unit.object)) {
+                return "Unique items can't be crafted";
+            }
+            if (!Apply::IsEligible(a_out.unit.object, a_out.unit.xList)) {
+                return "This item can't carry mods";
+            }
         }
         // Rolled now, by the player: their level is the item's, as it is for
-        // anything they take out of a chest.
+        // anything they take out of a chest. It gets its base implicit first,
+        // as every item now does from creation.
         a_out.ctx.itemLevel = (std::max)(1, static_cast<int>(a_out.player->GetLevel()));
+        a_out.rolled = BaseImplicitRoll(a_out.ctx);
+        a_out.flags = roll::kRecordImplicitGranted;
         return nullptr;
     }
 
@@ -364,7 +455,11 @@ bool Crafting::Craftable(RE::TESBoundObject* a_object, const char*& a_reason)
         a_reason = "Only weapons, armour and jewellery can be crafted";
         return false;
     }
-    if (HasOwnEnchantment(a_object)) {
+    // ★AN ENCHANTED RECORD IS CRAFTABLE WHEN ITS ENCHANTMENT CAN BE REPLACED
+    // (2.1.0): a generic variant with a plain template, and the setting on.
+    if (HasOwnEnchantment(a_object) &&
+        (!Config::ReplaceVanillaEnchants() ||
+            Apply::ClassifyEnchanted(a_object, nullptr) != Apply::VanillaKind::kRecordEnchanted)) {
         a_reason = "Items with an enchantment of their own can't be crafted";
         return false;
     }
@@ -377,6 +472,7 @@ bool Crafting::Craftable(RE::TESBoundObject* a_object, const char*& a_reason)
 
 Crafting::Outcome Crafting::ApplyOrb(const Target& a_target, roll::Orb a_orb)
 {
+    const Records::ReadGuard tableGuard{ Records::TableLock() };
     Subject     subject;
     const char* reason = Resolve(a_target, subject);
     if (reason) {
@@ -424,7 +520,8 @@ Crafting::Outcome Crafting::ApplyOrb(const Target& a_target, roll::Orb a_orb)
     }
 
     auto outcome = Rebuild(subject.player, subject.unit, subject.hadOurs, rolled,
-        subject.ctx.itemLevel, static_cast<std::uint8_t>(subject.flags | roll::kRecordCrafted));
+        subject.ctx.itemLevel, static_cast<std::uint8_t>(subject.flags | roll::kRecordCrafted),
+        subject.vanilla);
     Finish(subject.player);
     if (outcome.ok && effect != roll::CraftEffect::kNone) {
         outcome.message = std::format("{} -- corrupted, {}", outcome.message, roll::EffectName(effect));
@@ -438,12 +535,16 @@ Crafting::Outcome Crafting::ApplyOrb(const Target& a_target, roll::Orb a_orb)
 
 Crafting::Outcome Crafting::RemoveAffix(const Target& a_target, std::string_view a_affixId)
 {
+    const Records::ReadGuard tableGuard{ Records::TableLock() };
     Subject     subject;
     const char* reason = Resolve(a_target, subject);
     if (reason) {
         return Refused(reason);
     }
 
+    if (subject.rolled.corrupted) {
+        return Refused("Corrupted");
+    }
     auto       rolled = subject.rolled;
     const auto before = rolled.affixes.size();
     std::erase_if(rolled.affixes,
@@ -454,7 +555,8 @@ Crafting::Outcome Crafting::RemoveAffix(const Target& a_target, std::string_view
     Recount(rolled);
 
     auto outcome = Rebuild(subject.player, subject.unit, subject.hadOurs, rolled,
-        subject.ctx.itemLevel, static_cast<std::uint8_t>(subject.flags | roll::kRecordCrafted));
+        subject.ctx.itemLevel, static_cast<std::uint8_t>(subject.flags | roll::kRecordCrafted),
+        subject.vanilla);
     Finish(subject.player);
 
     logger::warn("debug edit[{:08X}]: REMOVED affix '{}' at the player's request -- {}{}",
@@ -464,12 +566,16 @@ Crafting::Outcome Crafting::RemoveAffix(const Target& a_target, std::string_view
 
 Crafting::Outcome Crafting::RerollValue(const Target& a_target, std::string_view a_affixId)
 {
+    const Records::ReadGuard tableGuard{ Records::TableLock() };
     Subject     subject;
     const char* reason = Resolve(a_target, subject);
     if (reason) {
         return Refused(reason);
     }
 
+    if (subject.rolled.corrupted) {
+        return Refused("Corrupted");
+    }
     auto  rolled = subject.rolled;
     float was = 0.0f;
     float now = 0.0f;
@@ -498,7 +604,8 @@ Crafting::Outcome Crafting::RerollValue(const Target& a_target, std::string_view
     }
 
     auto outcome = Rebuild(subject.player, subject.unit, subject.hadOurs, rolled,
-        subject.ctx.itemLevel, static_cast<std::uint8_t>(subject.flags | roll::kRecordCrafted));
+        subject.ctx.itemLevel, static_cast<std::uint8_t>(subject.flags | roll::kRecordCrafted),
+        subject.vanilla);
     Finish(subject.player);
 
     logger::warn("debug edit[{:08X}]: REROLLED the value of '{}' at the player's request, "
@@ -507,8 +614,9 @@ Crafting::Outcome Crafting::RerollValue(const Target& a_target, std::string_view
     return outcome;
 }
 
-Crafting::Outcome Crafting::SpawnAtFeet(RE::FormID a_base, int a_band, int a_itemLevel)
+Crafting::Outcome Crafting::SpawnAtFeet(RE::FormID a_base, int a_rarity, int a_itemLevel)
 {
+    const Records::ReadGuard tableGuard{ Records::TableLock() };
     const auto* table = Records::Table();
     auto*       player = RE::PlayerCharacter::GetSingleton();
     auto*       object = RE::TESForm::LookupByID<RE::TESBoundObject>(a_base);
@@ -519,36 +627,31 @@ Crafting::Outcome Crafting::SpawnAtFeet(RE::FormID a_base, int a_band, int a_ite
         return Refused("No item has that FormID");
     }
     const char* reason = nullptr;
-    if (!Craftable(object, reason)) {
-        return Refused(reason);
+    if (!Craftable(object, reason) || HasOwnEnchantment(object)) {
+        return Refused(reason ? reason : "Pick an unenchanted base");
     }
 
-    const int  band = std::clamp(a_band, 0, roll::kBandCount - 1);
+    // 0 normal, 1 magic, 2 rare -- rolled the way a drop is, until it lands.
+    const int  rarity = std::clamp(a_rarity, 0, 2);
     const int  level = std::clamp(a_itemLevel, 1, 255);
-    const auto wanted = static_cast<roll::Band>(band);
+    const auto wanted = static_cast<roll::Rarity>(rarity + 1);
 
-    // Rolled the way a drop is, until one lands in the band asked for. A cap,
-    // because some bands cannot be reached at some levels -- red below 35 --
-    // and the answer to that should be a sentence, not a hang.
-    roll::RolledItem   rolled;
-    const roll::Tuning tuning;
-    if (band > 0) {
-        const roll::RollContext ctx{ level, Apply::SlotsOf(object), false, true };
-        bool                    hit = false;
-        for (int attempt = 0; attempt < 20000 && !hit; ++attempt) {
-            rolled = roll::Roll(*table, ctx, tuning, Rng());
-            hit = roll::BandOf(rolled.tier) == wanted;
-        }
-        if (!hit) {
-            return Refused("No roll at that item level reaches that colour for this item");
-        }
+    roll::RolledItem        rolled;
+    const roll::Tuning      tuning;
+    const roll::RollContext ctx{ level, Apply::SlotsOf(object), false };
+    bool                    hit = false;
+    for (int attempt = 0; attempt < 20000 && !hit; ++attempt) {
+        rolled = roll::Roll(*table, ctx, tuning, Rng());
+        hit = roll::RarityOf(rolled) == wanted;
+    }
+    if (!hit) {
+        return Refused("No roll at that item level reaches that rarity for this item");
     }
 
     // ★ON THE GROUND, NOT INTO THE PACK. A reference the engine has just placed
     // has an ExtraDataList of its own, which is the one thing a new inventory
     // item lacks -- so the enchantment goes on with the ordinary ToItem and
-    // there is no drop-and-pickup. It also means the item is picked up like any
-    // other drop, which is the path that wants testing.
+    // there is no drop-and-pickup.
     const auto placed = player->PlaceObjectAtMe(object, false);
     if (!placed) {
         return Refused("The game would not place the item");
@@ -558,7 +661,7 @@ Crafting::Outcome Crafting::SpawnAtFeet(RE::FormID a_base, int a_band, int a_ite
     outcome.ok = true;
     outcome.message = object->GetName() ? object->GetName() : "";
 
-    if (band > 0) {
+    if (!rolled.affixes.empty()) {
         const auto applied = Apply::ToItem(rolled, object, &placed->extraList);
         if (!applied) {
             logger::warn("debug spawn[{:08X}]: placed, but the enchantment could not be built; "
@@ -571,12 +674,117 @@ Crafting::Outcome Crafting::SpawnAtFeet(RE::FormID a_base, int a_band, int a_ite
         const auto enchID = applied.enchantment->GetFormID();
         NoteRoll(enchID, rolled, level, roll::kRecordNone);
         outcome.enchantment = enchID;
-        outcome.band = static_cast<std::uint8_t>(band);
+        outcome.code = roll::RarityCode(rolled);
         outcome.message = applied.name;
     }
 
     logger::warn("debug spawn[{:08X}]: PLACED {} at the player's feet at the player's request -- "
-                 "{} band, item level {}, {} affix(es)",
-        a_base, outcome.message, roll::BandName(wanted), level, rolled.affixes.size());
+                 "{}, item level {}, {} mod(s) + {} implicit(s)",
+        a_base, outcome.message, roll::RarityName(wanted), level, rolled.Explicits(), rolled.Implicits());
+    return outcome;
+}
+
+Crafting::Outcome Crafting::GrantBaseImplicit(const Target& a_target)
+{
+    const Records::ReadGuard tableGuard{ Records::TableLock() };
+    Subject     subject;
+    const char* reason = Resolve(a_target, subject);
+    if (reason) {
+        return Refused(reason);
+    }
+    // Resolve already put the base implicit on a plain or replaced item, and
+    // granted one to an old record without. Nothing to do otherwise.
+    const bool plainOrForeign = !subject.hadOurs;
+    const bool legacyGrant = subject.hadOurs && subject.granted;
+    if (!plainOrForeign && !legacyGrant) {
+        return Refused("It already has its implicit");
+    }
+    if (subject.rolled.Implicits() == 0 && subject.vanilla == Apply::VanillaKind::kNone) {
+        return Refused("No implicit fits this kind of item");
+    }
+    auto outcome = Rebuild(subject.player, subject.unit, subject.hadOurs, subject.rolled,
+        subject.ctx.itemLevel, subject.flags, subject.vanilla);
+    Finish(subject.player);
+    logger::info("implicit[{:08X}]: base implicit granted on first sight -- {}{}", a_target.base,
+        outcome.ok ? "now " : "FAILED: ", outcome.message);
+    return outcome;
+}
+
+Crafting::Outcome Crafting::AddSecondImplicit(const Target& a_target)
+{
+    const Records::ReadGuard tableGuard{ Records::TableLock() };
+    Subject     subject;
+    const char* reason = Resolve(a_target, subject);
+    if (reason) {
+        return Refused(reason);
+    }
+    if (subject.rolled.corrupted) {
+        return Refused("Corrupted");
+    }
+    if (subject.rolled.Implicits() != 1) {
+        return Refused("Needs exactly one implicit");
+    }
+    auto pool = roll::ImplicitPool(*Records::Table(), subject.ctx);
+    roll::FitImplicitPool(pool, subject.rolled);
+    roll::RolledAffix added;
+    const roll::Tuning tuning;
+    bool               drawn = false;
+    while (!pool.empty() && !drawn) {
+        const auto result = roll::DrawAffix(pool, subject.ctx,
+            roll::TierWeightsFor(tuning, subject.ctx.itemLevel), Rng(), added);
+        if (result == roll::Draw::kExhausted) {
+            break;
+        }
+        drawn = result == roll::Draw::kDrawn;
+    }
+    if (!drawn) {
+        // ★The same rule as the Vaal outcome: no valid second implicit is a
+        // no-op, never an error.
+        return Refused("No valid second implicit for this item (no-op)");
+    }
+    auto rolled = subject.rolled;
+    rolled.affixes.push_back(added);
+    rolled.tier += added.points;
+    rolled.corrupted = true;   // as the Vaal outcome would leave it
+    auto outcome = Rebuild(subject.player, subject.unit, subject.hadOurs, rolled,
+        subject.ctx.itemLevel, static_cast<std::uint8_t>(subject.flags | roll::kRecordCrafted),
+        subject.vanilla);
+    Finish(subject.player);
+    logger::warn("debug edit[{:08X}]: VAAL-ADDED implicit '{}' at the player's request -- {}{}",
+        a_target.base, added.affix ? added.affix->id : "?", outcome.ok ? "now " : "FAILED: ", outcome.message);
+    return outcome;
+}
+
+Crafting::Outcome Crafting::SetCorrupted(const Target& a_target, bool a_corrupted)
+{
+    const Records::ReadGuard tableGuard{ Records::TableLock() };
+    Subject     subject;
+    const char* reason = Resolve(a_target, subject);
+    if (reason) {
+        return Refused(reason);
+    }
+    if (!subject.hadOurs) {
+        return Refused("Only an item with mods or an implicit can be marked");
+    }
+    // ★THE RECORD ONLY: corruption lives in the co-save flags, not in the
+    // enchantment, so nothing is rebuilt.
+    roll::ItemRecord record;
+    if (!Persist::GetItemRecord(a_target.enchantment, record)) {
+        return Refused("No record for this item");
+    }
+    record.flags = a_corrupted ? static_cast<std::uint8_t>(record.flags | roll::kRecordCorrupted)
+                               : static_cast<std::uint8_t>(record.flags & ~roll::kRecordCorrupted);
+    Persist::NoteItemRecord(a_target.enchantment, record);
+    auto rolled = subject.rolled;
+    rolled.corrupted = a_corrupted;
+    Persist::NoteEnchTier(a_target.enchantment, roll::RarityCode(rolled));
+    Finish(subject.player);
+    logger::warn("debug edit[{:08X}]: corrupted flag {} at the player's request", a_target.base,
+        a_corrupted ? "SET" : "CLEARED");
+    Outcome outcome;
+    outcome.ok = true;
+    outcome.enchantment = a_target.enchantment;
+    outcome.code = roll::RarityCode(rolled);
+    outcome.message = a_corrupted ? "Corrupted" : "No longer corrupted";
     return outcome;
 }

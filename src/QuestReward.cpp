@@ -257,6 +257,7 @@ namespace
         // specific item, and an empty roll there reads as the mod being broken
         // rather than as luck.
         const roll::RollContext ctx{ static_cast<int>(player->GetLevel()), slots, false, true };
+        const Records::ReadGuard tableGuard{ Records::TableLock() };
         const auto rolled = roll::Roll(*g_table, ctx, g_tuning, ThreadRng());
         if (rolled.affixes.empty()) {
             // Not a white roll -- noWhite has taken that outcome away. Reaching
@@ -283,17 +284,15 @@ namespace
             return;
         }
 
-        Persist::NoteEnchTier(applied.enchantment->GetFormID(),
-            static_cast<std::uint8_t>(roll::BandOf(rolled.tier)));
-        Records::Note(applied.enchantment->GetFormID(), rolled, ctx.itemLevel);
+        Records::Note(applied.enchantment->GetFormID(), rolled, ctx.itemLevel);   // record + rarity
 
         {
             std::scoped_lock lock{ g_statsLock };
             ++g_stats.affixed;
         }
 
-        logger::info("quest reward: {:08X} rolled tier {} -- {}", a_object->GetFormID(),
-            rolled.tier, applied.name.empty() ? a_object->GetName() : applied.name.c_str());
+        logger::info("quest reward: {:08X} rolled {} ({} mod(s) + {} implicit(s)) -- {}", a_object->GetFormID(),
+            roll::RarityName(roll::RarityOf(rolled)), rolled.Explicits(), rolled.Implicits(), applied.name.empty() ? a_object->GetName() : applied.name.c_str());
     }
 
     void Drain()

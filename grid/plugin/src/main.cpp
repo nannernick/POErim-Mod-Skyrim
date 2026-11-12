@@ -1,4 +1,5 @@
-﻿#include "api/HostApi.h"
+﻿#include "ui/CurrencyPouch.h"
+#include "api/HostApi.h"
 #include "game/BagFilter.h"
 #include "game/Census.h"
 #include "game/Costume.h"
@@ -1370,7 +1371,31 @@ namespace
         UpsertDefLines({ { a_key, a_def, a_name } });
     }
 
+    ItemDef DefForBase(RE::TESBoundObject* a_obj);
+
+    // ★★POErim 2.1.0: A CURRENCY IS 1x1, EVERYWHERE, AND STACKS 20 TO A CELL.
+    // Pinned here, above every other source, because the model-level fallback
+    // below is exactly how an orb used to inherit a 2x2 from a tuned item
+    // sharing its mesh. Applies to the player board, containers, the ground
+    // lists and shops alike -- they all resolve through this. The angles and
+    // icon tuning still come from wherever they came from; only the footprint
+    // and the stack cap are fixed. Without an applier this is never true.
     ItemDef DefFor(RE::TESBoundObject* a_obj)
+    {
+        if (FUI::CurrencyPouch::IsCurrency(a_obj)) {
+            ItemDef d = DefForBase(a_obj);
+            d.shape.clear();
+            d.w = 1;
+            d.h = 1;
+            d.bag = 0;
+            d.stack = 20;
+            d.pouchCap = 0;
+            return d;
+        }
+        return DefForBase(a_obj);
+    }
+
+    ItemDef DefForBase(RE::TESBoundObject* a_obj)
     {
         // ★★A SEX-SPECIFIC LINE WINS, AND THE PLAIN ONE IS STILL THE DEFAULT.
         // Purely additive: until somebody tunes a split record while playing
