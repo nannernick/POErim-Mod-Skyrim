@@ -28,6 +28,7 @@ namespace
     bool g_questRewards = true;
     bool g_discovery = false;
     bool g_containerTrace = false;
+    bool g_debugLoadLog = false;
     bool g_verboseSurvey = false;
 
     // 1.0 is vanilla. Clamped rather than validated: an INI is edited by hand,
@@ -92,7 +93,7 @@ namespace
     int              g_sixthMinLevel = 40;
     roll::VaalRules  g_vaal;
     bool             g_orbDrops = true;
-    Config::GearMode g_gearMode = Config::GearMode::kOrbsGround;
+    Config::GearMode g_gearMode = Config::GearMode::kAllInventory;
     bool             g_orbsInCorpse = false;
     bool             g_bundleGold = true;
     int              g_orbCleanupDays = 3;
@@ -290,6 +291,8 @@ void Config::Load()
             g_discovery = AsBool(value);
         } else if (key == "verbosesurvey") {
             g_verboseSurvey = AsBool(value);
+        } else if (key == "debugloadlog") {
+            g_debugLoadLog = AsBool(value);
         } else if (key == "containertrace") {
             g_containerTrace = AsBool(value);
         } else if (key == "tiermarker") {
@@ -439,7 +442,7 @@ void Config::Load()
                 g_gearMode = Config::GearMode::kItemsInventory;
             } else {
                 logger::warn("{}: EnemyGearMode '{}' is not one of ALL_GROUND, ALL_INVENTORY, "
-                             "ORBS_GROUND, ITEMS_INVENTORY; keeping ORBS_GROUND", kPath, value);
+                             "ORBS_GROUND, ITEMS_INVENTORY; keeping {}", kPath, value, GearModeName(g_gearMode));
             }
         } else if (key == "orbplacement") {
             std::string mode = value;
@@ -565,6 +568,11 @@ bool Config::DiscoveryEnabled()
 bool Config::ContainerTrace()
 {
     return g_containerTrace;
+}
+
+bool Config::DebugLoadLog()
+{
+    return g_debugLoadLog;
 }
 
 bool Config::VerboseSurvey()
@@ -699,7 +707,14 @@ const char* Config::GearModeName(GearMode a_mode)
 void Config::ResetDrops()
 {
     // Load() only assigns what the file names, so the defaults go back first.
+    // ★Every drop key SaveDrops writes, the gear mode and the switch included:
+    // an INI without the line must come back at the shipped default, not at
+    // whatever the debug menu last set.
     g_drops = roll::DropTuning{};
+    g_orbDrops = true;
+    g_gearMode = Config::GearMode::kAllInventory;
+    g_orbsInCorpse = false;
+    g_bundleGold = true;
     g_orbCleanupDays = 3;
     g_orbDropNotify = false;
     g_dropMultAuto = true;

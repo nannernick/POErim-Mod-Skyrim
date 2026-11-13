@@ -193,6 +193,13 @@ namespace FUI::UIRoot
 
     void OnShow();   // menu received kShow
     void OnClose();  // menu received kHide
+
+    // ★POErim 2.1.1: let go of every piece of transient UI state -- text-field
+    // focus and keyboard capture, held keys, the armed orb, the pouch drag and
+    // queued drops, an open quick wheel. At every save load, every load screen
+    // (load doors too) and every menu close. Safe with the menu closed; the
+    // ImGui half runs only when no frame of ours is being drawn.
+    void ResetTransientInput(const char* a_why);
     void Render();   // full ImGui frame; called from PostDisplay only
     void Tick();     // game-update hook (pre-render): def apply + model parking
 

@@ -39,7 +39,23 @@ namespace FUI::CurrencyPouch
     // Whether the player's own board leaves this form out because the pouch
     // shows it instead: pouch on, currency, and an ordinary inventory session
     // (never in a container or a shop, where orbs must be movable as tiles).
+    // ★2.1.1: a currency is a MISC the applier claims by form ID (POErim: its
+    // nine orbs, DiabloInSkyrim.esp 0x801-0x809) -- nothing by type, mesh,
+    // keyword or gem flag, so a quest item, key or gem is never hidden.
     [[nodiscard]] bool HidesFromBoard(const RE::TESBoundObject* a_obj);
+
+    // The filter's switch on its own: pouch on and the plain inventory.
+    // Every board build reads it (Grid::Rebuild), whatever caused the build.
+    [[nodiscard]] bool HidingNow();
+
+    // GridInventory_ui.ini CurrencyPouchDebugLog / UiStateDebugLog (both 0 by
+    // default): a line per board refresh (why, shown, hidden), and a line per
+    // UI-state reset at loads, load screens and menu closes.
+    [[nodiscard]] bool DebugBoard();
+    [[nodiscard]] bool DebugUiState();
+
+    // Drop the drag and any queued ground drop. Loads, load screens, menu close.
+    void ResetTransient(const char* a_why);
 
     [[nodiscard]] bool Enabled();
 

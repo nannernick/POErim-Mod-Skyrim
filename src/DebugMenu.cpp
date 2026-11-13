@@ -893,7 +893,7 @@ namespace
         static bool s_loaded = false;
         static roll::DropTuning s_tuning;
         static bool s_enabled = true;
-        static int  s_mode = 2;
+        static int  s_mode = 1;   // ALL_INVENTORY, the shipped default
         static int  s_cleanup = 3;
         static bool s_notify = false;
         if (!s_loaded) {

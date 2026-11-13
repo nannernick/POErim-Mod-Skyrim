@@ -868,7 +868,9 @@ namespace FUI::Theme
         // 0 means "not resolved yet"; EnsureSkin turns the name into an index
         // the first time anything asks, because kSkins is not comparable at
         // static-init time.
-        constexpr const char* kDefaultSkin = "Sumi Parchment";
+        // POErim's build ships Fable (2.1.1); a "!skin3 = <name>" line in
+        // GridInventory_ui.ini still wins.
+        constexpr const char* kDefaultSkin = "Fable Crimson";
         int   g_skin = 0;   // 1-based once resolved
         // ★Capture-lamp offset shared by every icon. Deliberately NOT in the
         // per-skin block below — see Theme.h.

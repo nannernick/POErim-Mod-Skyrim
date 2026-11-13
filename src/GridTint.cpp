@@ -155,6 +155,17 @@ namespace
             }
         }
         SKSE::GetTaskInterface()->AddTask([a_base, a_enchantment]() {
+            // ★NOT WHILE THE WORLD IS CHANGING (2.1.1). The grant can drop and
+            // pick the item back up; with no attached cell under the player
+            // that walks through null. Forgotten so the next hover asks again.
+            if (Apply::WorldBusy()) {
+                std::scoped_lock lock{ g_sightLock };
+                g_sightAsked.erase({ a_base, a_enchantment });
+                if (Config::DebugLoadLog()) {
+                    logger::info("first sight[{:08X}]: held -- the world is loading", a_base);
+                }
+                return;
+            }
             const auto outcome = Crafting::GrantBaseImplicit({ a_base, a_enchantment });
             if (outcome.ok) {
                 logger::info("first sight[{:08X}]: {}", a_base, outcome.message);

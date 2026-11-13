@@ -2236,6 +2236,21 @@ namespace
                     logger::info("[BEAST] menu '{}' {}", a_event->menuName.c_str(),
                         a_event->opening ? "OPENING" : "closing");
                 }
+                // ★POErim 2.1.1: a LOAD SCREEN resets every piece of
+                // transient UI state -- a load door as much as a save load.
+                // Observation only: never consumes the event.
+                if (a_event->menuName == RE::LoadingMenu::MENU_NAME) {
+                    FUI::UIRoot::ResetTransientInput(a_event->opening ? "load screen up"
+                                                                      : "load screen down");
+                    if (g_movementOff) {   // the text-input movement block, if we hold it
+                        SetMoveInput(true);
+                        g_movementOff = false;
+                    }
+                } else if (FUI::CurrencyPouch::DebugUiState()) {
+                    logger::info("[UISTATE] menu '{}' {} (text input {}, wheel {}, movement block {})",
+                        a_event->menuName.c_str(), a_event->opening ? "opening" : "closing",
+                        FUI::UIRoot::IsTextInputActive(), FUI::Wheeler::IsOpen(), g_movementOff);
+                }
                 // one handler per menu concern; true = event fully handled
                 HandleLockpickAutoReopen(*a_event);   // observation only
                 HandleMenuHopClose(*a_event) ||
@@ -2600,6 +2615,9 @@ namespace
         // NOTE: Loadout reset moved to the serialization REVERT callback (L3) —
         // kPostLoadGame arrives AFTER the cosave load and would wipe the tabs.
         FUI::UIRoot::Close();   // hide across load/new game
+        // ★POErim 2.1.1: and no capture, armed orb, drag or open wheel
+        // survives it.
+        FUI::UIRoot::ResetTransientInput("save load / new game");
     }
 
     // Registered with sender == "SKSE", so every `type` here really is a

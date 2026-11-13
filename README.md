@@ -39,10 +39,13 @@ Nine crafting orbs, each with its own face and its own mood. They are hand-built
 
 <sub>Left to right: Transmutation (serene), Augmentation (furious, with spikes and loose shards), Alchemy (startled, with four bubbles popping off it), Exalted (stern, under a crown), Chaos (unhinged, mismatched eyes), Scouring (drowsy, slashed), Divine (gold with sapphire, a halo round its head, face tipped up), Vaal (a menacing red rock), Regal (half cobalt, half gold, crowned).</sub>
 
-## Status (2.1.0)
+## Status (2.1.1)
 
 | | |
 |---|---|
+| Currency pouch filter: orbs from corpses, shops, chests and splits go to the pouch; quest items never hidden | **Fixed in 2.1.1** |
+| Orbs drop into the corpse by default (`EnemyGearMode=ALL_INVENTORY`) | **Changed in 2.1.1** |
+| Nothing touches references or inventories during loads and load doors | **Fixed in 2.1.1** |
 | Affix loot on NPC gear, containers, vendors, quest rewards | Working |
 | Rarity by mod count: normal / magic / rare, corrupted red | **New in 2.1.0** |
 | Every item has a base implicit; implicits replace vanilla enchantments | **New in 2.1.0** |
@@ -87,7 +90,7 @@ The debug menu's Integration page can list exactly which vanilla enchantments in
 
 ## Crafting orbs
 
-Orbs drop from kills (on the ground by default). In Grid Inventory, right-click an orb, then click an item. Shift keeps the orb on the cursor; right-click or Esc puts it back. An orb that can't be used does nothing and is **not** spent, and the item is left exactly as it was.
+Orbs drop from kills (into the corpse by default; `EnemyGearMode` in `DiabloLoot.ini`). In Grid Inventory, right-click an orb, then click an item. Shift keeps the orb on the cursor; right-click or Esc puts it back. An orb that can't be used does nothing and is **not** spent, and the item is left exactly as it was.
 
 | | Orb | Works on | Does | Default drop share |
 |---|---|---|---|---|
@@ -111,18 +114,39 @@ New mods follow the same rules as a drop: the item's slots, its stored item leve
 
 ## Orb drops
 
+Orbs go into the corpse by default (`EnemyGearMode=ALL_INVENTORY`, 2.1.1); `ORBS_GROUND` puts them on the ground beside it as before 2.1.1. The drop happens when the game reports the enemy dead, which is after the death animation, so a corpse can take a moment to show its orbs.
+
 `OrbDropChance` that a kill drops orbs, then `OrbBaseCount + OrbCountPerLevel x level` of them (at most `OrbMaxCount`), times `OrbDropMultiplier`. Which orb is drawn by weight; Regal sits between Alchemy and Exalted.
 
 **Difficulty:** the count is multiplied by `1.0 + 0.15 x difficulty` (Novice x1.00 to Legendary x1.75). `DropQuantityMultiplier=Auto` follows the game's difficulty live, or set a number of 1.0 or more. The whole part always drops and the remainder is the chance of one more. Gold and gear are unchanged.
 
 ## Currency pouch (Grid Inventory)
 
-A separate window beside the inventory, opened by the orb button on the inventory's right edge (or a hotkey). It has one slot per orb in a fixed order, always shown, dimmed at 0. Hover a slot for the name, what it does and how many you have. Right-click a slot to put one orb on the cursor and click an item to use it. Drag a slot out of every window to drop the whole stack on the ground.
+A separate window beside the inventory, opened by the **Orbs** button on the inventory's right edge (or a hotkey). It has one slot per orb in a fixed order, always shown, dimmed at 0, with your total under them ("Orbs you pick up appear here" while empty). Hover a slot for the name, what it does and how many you have. Right-click a slot to put one orb on the cursor and click an item to use it. Drag a slot out of every window to drop the whole stack on the ground. **Deposit all** takes every orb off the inventory board and keeps it in the pouch.
+
+- Only the nine orbs (`DiabloInSkyrim.esp` 0x801-0x809) are currency. Quest items, keys, gems, soul gems and every other misc item stay on the board and are never hidden, changed or armed by a right-click.
+- The board applies the pouch every time it is built, whatever caused it: a corpse *Take* or *Take all*, a purchase, a chest transfer, a stack split or moving gold all end the same way. While a container or shop is open, orbs are tiles (so you can store and sell them); back in the plain inventory they go to the pouch.
 
 - The pouch is a **view** of your own inventory, with no storage of its own. Weight, vendors and other mods see the orbs as ordinary items, and nothing can be duplicated or lost through it.
 - With the pouch on, orbs don't take cells on your inventory board. In shops and containers they're ordinary 1x1 tiles, so you can sell and store them. Orbs in other containers and vendors always show as tiles there, and the pouch never opens on those screens.
 - With the pouch off, orbs are ordinary 1x1 items, 20 to a cell. 45 orbs show as 20 / 20 / 5, but that split is display only.
-- Settings go in `GridInventory_ui.ini`: `CurrencyPouch=1`, `CurrencyPouchHotkey=` (a letter; empty = none), `CurrencyPouchX` / `CurrencyPouchY` (first-open position).
+- Settings go in `GridInventory_ui.ini`:
+
+| Setting | Default | |
+|---|---|---|
+| `CurrencyPouch` | 1 | The pouch on or off |
+| `CurrencyPouchHotkey` | (none) | A letter that opens and closes the pouch |
+| `CurrencyPouchX` / `CurrencyPouchY` | -1 / -1 | First-open position; -1 = beside the inventory |
+| `CurrencyPouchDebugLog` | 0 | **New in 2.1.1.** A line per board refresh in `GridInventory.log`: what asked for it, tiles shown, orbs hidden for the pouch, other forms hidden, and where every quest item went |
+| `UiStateDebugLog` | 0 | **New in 2.1.1.** A line per menu open/close and per reset at save loads, load screens and menu closes: text-input capture, the active ImGui widget, the quick wheel, the armed orb, the pouch's drag and queued drops |
+
+POErim's Grid build defaults to the **Fable Crimson** skin from 2.1.1. A `!skin3 = <name>` line in `GridInventory_ui.ini` still wins (ARPG POV's shipped `GridInventory_ui.ini` sets `Parchment Crimson`).
+
+## Known issues
+
+- **Orbs on the ground use a vanilla cut-gem mesh**, so the orb's own texture does not show in the world (only in the inventory and pouch, which use the PNG icons). No orb mesh ships yet.
+- **Orbs inside a corpse get no name tag.** ARPG POV labels things lying on the ground; a corpse gets its outline, and its orbs show when you loot it.
+- **Menu keys dead after a load door, and a crash on a cell change** (one report, after Bleak Falls Sanctum). 2.1.1 clears every piece of UI state at every load screen and keeps POErim's tasks away from references while the world loads; the cause is not confirmed. If it happens again: set `DebugLoadLog=1` in `DiabloLoot.ini`, `UiStateDebugLog=1` in `GridInventory_ui.ini` and `[Debug] LoadState = 1` in `ARPGPOV.ini`, reproduce, and send `DiabloInSkyrim.log`, `GridInventory.log`, `ARPGPOV.log` and the Crash Logger log.
 
 ## Requirements
 
@@ -158,6 +182,13 @@ Player settings are in `Data/SKSE/Plugins/DiabloLoot.ini`. Every setting is opti
 | `DropQuantityMultiplier` | Auto | Orb count multiplier: Auto (by difficulty) or a number of 1.0 or more |
 | `DropQuantityPerDifficulty` | 0.15 | Step per difficulty level |
 | `OrbWeightRegal` | 40 | Regal Orb drop weight |
+
+New in 2.1.1:
+
+| Setting | Default | |
+|---|---|---|
+| `EnemyGearMode` | ALL_INVENTORY | **Default changed** from ORBS_GROUND: orbs go into the corpse with its gear. The debug menu's *Reset from the INI* now also puts this (and `OrbDrops`, `OrbPlacement`, `BundleGold`) back to the default when the INI has no line for it |
+| `DebugLoadLog` | 0 | Diagnostic: every load screen and save load, and every death, first-sight implicit or loot roll that waited for the world to load or was skipped because its cell was unloading |
 
 `VaalWeightImplicit` is gone (every item has an implicit now); `VaalAddImplicitChance` replaces it. `PriceMult*` and `WeaponCharge*` keep their Blue..Red names but now follow an item's point total (1-3, 4-6, 7-9, 10-12, 13+), not its colour.
 

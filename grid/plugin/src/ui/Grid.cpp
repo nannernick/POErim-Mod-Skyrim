@@ -317,6 +317,12 @@ namespace FUI::Grid
         };
 
         bool g_overloaded = false;      // W2: hard board can't hold everything
+        // POErim 2.1.1: which way the last build applied the pouch filter, and
+        // what it hid (the [CURRENCY] refresh log).
+        bool g_builtHidingCurrency = false;
+        int  g_buildHidCurrencyForms = 0;
+        int  g_buildHidCurrencyUnits = 0;
+        int  g_buildHidOther = 0;
         bool g_capacityDirty = true;    // recompute on next CapacityTick
         int  g_spaceUsed = 0;           // S2: cells occupied (main board + bags)
         int  g_spaceTotal = kCols * kMinRows;   // + every owned bag's grid
@@ -5995,6 +6001,9 @@ std::function<void(RE::TESBoundObject*, int, RE::ExtraDataList*)> g_dropWorld;
         // per-form caches (g_gold / g_values).
         void CollectDisplayTiles(RE::PlayerCharacter* player)
         {
+            g_buildHidCurrencyForms = 0;
+            g_buildHidCurrencyUnits = 0;
+            g_buildHidOther = 0;
             // ★Typed bags: one pass to learn which filters the player has a bag
             // for, BEFORE any tile is built — the stackable path needs to know
             // while it is deciding where new units go, and the bag tiles do not
@@ -6032,7 +6041,28 @@ std::function<void(RE::TESBoundObject*, int, RE::ExtraDataList*)> g_dropWorld;
                 auto* entry = pair.second.get();
                 if (!obj || count <= 0) continue;
                 if (obj->IsGold()) { g_gold = count; continue; }
-                if (SkipInventoryEntry(obj, count)) continue;   // shared filter (Phase 2)
+                if (SkipInventoryEntry(obj, count)) {   // shared filter (Phase 2)
+                    // POErim 2.1.1: what the refresh log reports.
+                    if (CurrencyPouch::HidesFromBoard(obj)) {
+                        ++g_buildHidCurrencyForms;
+                        g_buildHidCurrencyUnits += count;
+                    } else {
+                        ++g_buildHidOther;
+                        // A QUEST item left off the board is what the report
+                        // was about: say which rule did it.
+                        if (CurrencyPouch::DebugBoard() && entry && entry->IsQuestObject()) {
+                            const char* nm = obj->GetName();
+                            const char* why = count <= Loadout::ReservedCount(obj->GetFormID())
+                                                  ? "held back by a loadout tab"
+                                              : (!nm || !*nm) ? "no name"
+                                              : !obj->GetPlayable() ? "not playable"
+                                                                    : "other";
+                            SKSE::log::info("[CURRENCY] quest item '{}' {:08X} x{} NOT on the board: {}",
+                                nm ? nm : "?", obj->GetFormID(), count, why);
+                        }
+                    }
+                    continue;
+                }
 
                 // Phase 4/5: cache the barter base value for this form. Coins are
                 // excluded (mirror, not sellable) but the POUCH is a real sellable
@@ -7794,6 +7824,7 @@ std::function<void(RE::TESBoundObject*, int, RE::ExtraDataList*)> g_dropWorld;
         // ★S-G: square the gold invariant at the opening -- migration of an
         // old save and any drift the events missed both settle here.
         CoinCensus("menu-open");
+        CurrencyFilterTick();   // POErim 2.1.1: a stale pouch filter rebuilds too
         if (g_needRebuild.exchange(false, std::memory_order_acq_rel) ||
             g_items.empty()) {
             Rebuild(a_where);
@@ -7905,10 +7936,77 @@ std::function<void(RE::TESBoundObject*, int, RE::ExtraDataList*)> g_dropWorld;
         auto* player = RE::PlayerCharacter::GetSingleton();
         if (!player) return;
 
+        // POErim 2.1.1: the pouch filter is applied by EVERY build, whatever
+        // asked for it, and the board remembers which way it was built so a
+        // switch (a container or shop closing) rebuilds it -- see
+        // CurrencyFilterTick.
+        g_builtHidingCurrency = CurrencyPouch::HidingNow();
         CollectDisplayTiles(player);            // stage 1+2 (collect + coin partition)
         auto bags = ReconcileBagBookkeeping();  // stage 3
         BuildViewsAndSpill(bags);               // stage 4 (views + spill)
         FinalizeRebuild();                      // stage 5
+        if (CurrencyPouch::DebugBoard()) {
+            SKSE::log::info("[CURRENCY] board refresh ({}:{}): {} tile(s) shown, {} orb form(s) "
+                            "/ {} orb(s) hidden for the pouch, {} other form(s) hidden; filter {}",
+                a_where.function_name(), a_where.line(), g_items.size(),
+                g_buildHidCurrencyForms, g_buildHidCurrencyUnits, g_buildHidOther,
+                g_builtHidingCurrency ? "ON (plain inventory)" : "off (container/shop/pouch off)");
+            // Where every quest item went: a bag, a cell, or nowhere yet.
+            for (const auto& it : g_items) {
+                if (!it.quest || !it.obj) continue;
+                SKSE::log::info("[CURRENCY]   quest tile '{}' key '{}' in '{}' at [{},{}]",
+                    it.obj->GetName() ? it.obj->GetName() : "?", it.key,
+                    it.inBag.empty() ? std::string("main") : it.inBag, it.col, it.row);
+            }
+        }
+    }
+
+    void CurrencyFilterTick()
+    {
+        // ★A board built with the filter one way and drawn with it the other
+        // (a corpse or shop closed back to the plain inventory, or the other
+        // way round) is stale, whatever event did or did not fire.
+        if (g_views.empty()) return;
+        if (CurrencyPouch::HidingNow() != g_builtHidingCurrency) {
+            if (CurrencyPouch::DebugBoard()) {
+                SKSE::log::info("[CURRENCY] pouch filter switched {} -- rebuilding",
+                    g_builtHidingCurrency ? "off" : "on");
+            }
+            RequestRebuild();
+        }
+    }
+
+    int DepositCurrencies(const std::vector<std::uint32_t>& a_forms)
+    {
+        if (a_forms.empty()) return 0;
+        std::set<std::string> keys;
+        for (const auto id : a_forms) {
+            if (auto* f = RE::TESForm::LookupByID(id)) keys.insert(FormKey(f));
+        }
+        int freed = 0;
+        for (auto it = g_layout.begin(); it != g_layout.end();) {
+            if (keys.contains(BaseKey(it->first))) {
+                it = g_layout.erase(it);
+                ++freed;
+            } else {
+                ++it;
+            }
+        }
+        if (g_armed && keys.contains(BaseKey(g_armed->key))) g_armed.reset();
+        RequestRebuild();
+        SKSE::log::info("[CURRENCY] deposit all: {} board cell(s) let go, the pouch shows them", freed);
+        return freed;
+    }
+
+    void ResetTransientUi(const char* a_why)
+    {
+        const bool armed = g_armed.has_value();
+        g_armed.reset();
+        g_applyHover = ApplyHover{};
+        if (CurrencyPouch::DebugUiState()) {
+            SKSE::log::info("[UISTATE] grid reset ({}): armed orb {}, holding {}",
+                a_why ? a_why : "?", armed ? "dropped" : "none", g_held ? "yes" : "no");
+        }
     }
 
     // ---- ★B3 partial-update helpers: main-view occupancy -----------------
@@ -8098,8 +8196,12 @@ std::function<void(RE::TESBoundObject*, int, RE::ExtraDataList*)> g_dropWorld;
         // anchor 32, and IsAnchor answers for all thirty-two.
         {
             const char* nm = obj->GetName();
+            // ★POErim 2.1.1: and an orb the pouch shows. This door is how a
+            // corpse Take, a Take all, a purchase or a chest transfer arrives --
+            // as a partial add, not a rebuild -- and it never asked, so every
+            // orb looted landed on the board until something rebuilt it.
             if (!obj->GetPlayable() || Costume::IsAnchor(obj) ||
-                !nm || !*nm) {
+                !nm || !*nm || CurrencyPouch::HidesFromBoard(obj)) {
                 SKSE::log::info("[B3] partial add ({:08X}): board-invisible "
                                 "form -- nothing to do", a_form);
                 return true;
@@ -9152,6 +9254,8 @@ std::function<void(RE::TESBoundObject*, int, RE::ExtraDataList*)> g_dropWorld;
             auto* obj = form ? form->As<RE::TESBoundObject>() : nullptr;
             if (!obj) return false;
             if (obj->IsGold() || GoldCoins::IsCoinForm(a_form)) return false;   // §7
+            // POErim 2.1.1: an orb the pouch shows has no tile to bring back.
+            if (CurrencyPouch::HidesFromBoard(obj)) return false;
             const GridDef gdef = g_resolver ? g_resolver(obj) : GridDef{};
             if (gdef.bag != 0) return false;   // bag wiring: the rebuild's business
             auto inv = player->GetInventory(
@@ -10620,6 +10724,17 @@ std::function<void(RE::TESBoundObject*, int, RE::ExtraDataList*)> g_dropWorld;
         // total stays == engine count — a later cancel is auto-restored by the
         // ACQUIRE path (the source tile is now short by a_count).
         if (!a_obj || a_count <= 0) return;
+        // ★POErim 2.1.1: an orb the pouch shows is not split off the board. A
+        // tile for one can only be a stale one (drawn before the filter
+        // applied); splitting it carried a fragment the next rebuild hid while
+        // the cursor still held it -- "every orb vanished". The rebuild puts
+        // the stack where it belongs and the engine's count never moves.
+        if (CurrencyPouch::HidesFromBoard(a_obj)) {
+            SKSE::log::info("[CURRENCY] split of '{}' refused: the pouch shows it -- rebuilding",
+                a_obj->GetName() ? a_obj->GetName() : "?");
+            RequestRebuild();
+            return;
+        }
 
         // G4 GOLD split: a_count is a VALUE. Create a pin for the fragment
         // (subtracts from walking gold), reduce the source if it was itself a
@@ -17085,6 +17200,7 @@ std::function<void(RE::TESBoundObject*, int, RE::ExtraDataList*)> g_dropWorld;
             }
         }
 
+        CurrencyFilterTick();   // POErim 2.1.1
         if (g_needRebuild.exchange(false, std::memory_order_acq_rel)) {
             Rebuild();
         }

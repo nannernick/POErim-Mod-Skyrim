@@ -99,6 +99,10 @@ namespace
         if (!ui) {
             return true;  // cannot tell: assume the worse of the two
         }
+        // 2.1.1: and never while the world is loading (a load door or a save).
+        if (Apply::WorldBusy()) {
+            return true;
+        }
         return ui->IsMenuOpen(RE::InventoryMenu::MENU_NAME) ||
                ui->IsMenuOpen(RE::DialogueMenu::MENU_NAME) ||
                ui->IsMenuOpen(RE::ContainerMenu::MENU_NAME) ||

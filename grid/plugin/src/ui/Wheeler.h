@@ -203,6 +203,12 @@ namespace FUI::Wheeler
     [[nodiscard]] bool YieldingToVanilla();
     void SetEnabled(bool a_on);
 
+    // ★POErim 2.1.1: shut the wheel through the one close path, for a LOAD
+    // SCREEN (a load door, not only a save load). A wheel left open blanks
+    // every button at PlayerControls and MenuControls -- Esc and the
+    // inventory key included -- until the hotkey is pressed again.
+    void ForceClose(const char* a_why);
+
     // ★★A star has just been taken off this form, so it gives up its place on
     // the wheel. Called by whatever removes the star, at the moment it does.
     //

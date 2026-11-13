@@ -4430,6 +4430,9 @@ namespace FUI::UIRoot
         // hidden is a game the player cannot click, so this runs on every exit
         // from the menu -- not only the tidy ones.
         SetGameCursorVisible(true);
+        // POErim 2.1.1: the armed orb and the pouch's drag end with the menu.
+        Grid::ResetTransientUi("menu closed");
+        CurrencyPouch::ResetTransient("menu closed");
         SKSE::log::info("[UI] menu hidden");
     }
 
@@ -5160,7 +5163,46 @@ namespace FUI::UIRoot
 
     bool IsTextInputActive()
     {
-        return g_textInputOn;
+        // ★POErim 2.1.1: only while the board is LIVE. The mirror is written
+        // by our render pass, so once the menu stops drawing it keeps whatever
+        // the last frame said -- and every reader of this (the movement block
+        // in the Update hook, the hotkey-menu intercept that shuts the Tween
+        // menu (Tab) and the Journal (Esc)) went on obeying a text field that
+        // was no longer on screen. Nothing can be typed into a board that is
+        // not drawn, so the answer outside one is no.
+        return g_textInputOn && IsBoardLive();
+    }
+
+    void ResetTransientInput(const char* a_why)
+    {
+        const bool textWas = g_textInputOn.load();
+        const bool live = IsSessionOpen();
+        bool       imguiWant = false;
+        bool       imguiActive = false;
+        if (ImGui::GetCurrentContext()) {
+            imguiWant = ImGui::GetIO().WantCaptureKeyboard || ImGui::GetIO().WantTextInput;
+            imguiActive = ImGui::GetActiveID() != 0;
+        }
+        if (CurrencyPouch::DebugUiState()) {
+            SKSE::log::info("[UISTATE] reset ({}): menu {}, text input mirror {}, imgui wants keyboard {}, "
+                            "active widget {}, wheel {}",
+                a_why ? a_why : "?", live ? "OPEN" : "closed", textWas, imguiWant, imguiActive,
+                Wheeler::IsOpen() ? "OPEN" : "closed");
+        }
+        g_textInputOn = false;
+        // The ImGui half only with no frame of ours in flight: our frames run
+        // only while the menu is open, so a closed menu is a quiet context.
+        if (!live && ImGui::GetCurrentContext()) {
+            ImGui::ClearActiveID();
+            ImGui::GetIO().ClearInputKeys();
+            ImGui::GetIO().ClearInputMouse();
+        }
+        g_padRaw.store(0);
+        g_padHeld.store(0);
+        g_padPrev = 0;
+        Grid::ResetTransientUi(a_why);
+        CurrencyPouch::ResetTransient(a_why);
+        Wheeler::ForceClose(a_why);
     }
 
     void AddScrollEvent(float a_x, float a_y)

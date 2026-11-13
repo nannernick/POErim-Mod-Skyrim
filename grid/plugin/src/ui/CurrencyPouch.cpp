@@ -35,6 +35,8 @@ namespace FUI::CurrencyPouch
             int   hotkey = 0;          // CurrencyPouchHotkey = P (a letter), 0 = none
             float x = -1.0f;           // CurrencyPouchX / Y: first-open position, -1 = beside the inventory
             float y = -1.0f;
+            bool  debugBoard = false;  // CurrencyPouchDebugLog = 1: a line per board refresh
+            bool  debugUi = false;     // UiStateDebugLog = 1: a line per UI-state reset
         };
 
         const Settings& Cfg()
@@ -64,6 +66,10 @@ namespace FUI::CurrencyPouch
                         try { out.x = std::stof(val); } catch (...) {}
                     } else if (key == "CurrencyPouchY") {
                         try { out.y = std::stof(val); } catch (...) {}
+                    } else if (key == "CurrencyPouchDebugLog") {
+                        out.debugBoard = val == "1" || val == "true" || val == "on";
+                    } else if (key == "UiStateDebugLog") {
+                        out.debugUi = val == "1" || val == "true" || val == "on";
                     }
                 }
                 SKSE::log::info("[CURRENCY] pouch {}, hotkey {}", out.enabled ? "on" : "OFF",
@@ -171,17 +177,47 @@ namespace FUI::CurrencyPouch
         return Cfg().enabled && HostApi::ApplierTable() != nullptr;
     }
 
+    bool HidingNow()
+    {
+        return Enabled() && LootBarter::CurrentMode() == LootBarter::Mode::kNormal;
+    }
+
     bool HidesFromBoard(const RE::TESBoundObject* a_obj)
     {
-        return Enabled() && LootBarter::CurrentMode() == LootBarter::Mode::kNormal && IsCurrency(a_obj);
+        // MISC only: every currency is one, and nothing else can be hidden by
+        // an applier that answers too broadly.
+        return a_obj && a_obj->Is(RE::FormType::Misc) && HidingNow() && IsCurrency(a_obj);
+    }
+
+    bool DebugBoard() { return Cfg().debugBoard; }
+    bool DebugUiState() { return Cfg().debugUi; }
+
+    void ResetTransient(const char* a_why)
+    {
+        std::size_t dropped = 0;
+        {
+            std::scoped_lock lock{ g_lock };
+            dropped = g_dropQ.size();
+            g_dropQ.clear();
+        }
+        const bool dragging = g_drag != 0;
+        g_drag = 0;
+        if (Cfg().debugUi) {
+            SKSE::log::info("[UISTATE] pouch reset ({}): drag {}, {} queued drop(s) dropped",
+                a_why ? a_why : "?", dragging ? "cancelled" : "none", dropped);
+        }
     }
 
     void Tick()
     {
         if (!Enabled()) return;
-        EnsureForms();
+        // ★FAIL SAFE (2.1.1): nothing here runs while the world is changing --
+        // the queued drop below puts a reference into the player's cell.
         auto* player = RE::PlayerCharacter::GetSingleton();
-        if (!player) return;
+        if (!player || !player->Is3DLoaded()) return;
+        if (const auto* cell = player->GetParentCell(); !cell || !cell->IsAttached()) return;
+        if (auto* ui = RE::UI::GetSingleton(); !ui || ui->IsMenuOpen(RE::LoadingMenu::MENU_NAME)) return;
+        EnsureForms();
 
         std::vector<std::pair<std::uint32_t, int>> drops;
         std::vector<std::uint32_t>                 forms;
@@ -222,6 +258,11 @@ namespace FUI::CurrencyPouch
     void Draw()
     {
         if (!Enabled()) return;
+        // ★FAIL SAFE (2.1.1): only over a live board, with a player.
+        if (!UIRoot::IsBoardLive() || !RE::PlayerCharacter::GetSingleton()) {
+            g_drag = 0;
+            return;
+        }
         PreloadAndReport();
         // ★ONLY ON THE PLAYER'S OWN INVENTORY: never over a container or a shop.
         if (LootBarter::CurrentMode() != LootBarter::Mode::kNormal) return;
@@ -243,8 +284,12 @@ namespace FUI::CurrencyPouch
             mainSize = w->size;
         }
         const ImVec2 btn(30.0f * S, 30.0f * S);
+        // ★2.1.1: a word under the button, so it reads as the pouch at a glance.
+        constexpr const char* kToggleLabel = "Orbs";
+        const ImVec2 labelSize = ImGui::CalcTextSize(kToggleLabel);
+        const float  toggleW = (std::max)(btn.x, labelSize.x) + 8.0f * S;
         ImGui::SetNextWindowPos(ImVec2(mainPos.x + mainSize.x + 4.0f * S, mainPos.y + 40.0f * S));
-        ImGui::SetNextWindowSize(ImVec2(btn.x + 8.0f * S, btn.y + 8.0f * S));
+        ImGui::SetNextWindowSize(ImVec2(toggleW, btn.y + labelSize.y + 12.0f * S));
         ImGui::Begin("##currency_toggle", nullptr,
             ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoSavedSettings |
                 ImGuiWindowFlags_NoBackground);
@@ -272,9 +317,13 @@ namespace FUI::CurrencyPouch
                 dl->AddImage(reinterpret_cast<ImTextureID>(face->srv), ImVec2(p.x + 3.0f * S, p.y + 3.0f * S),
                     ImVec2(p.x + btn.x - 3.0f * S, p.y + btn.y - 3.0f * S));
             }
-            if (ImGui::IsItemHovered()) {
+            const bool btnHovered = ImGui::IsItemHovered();
+            dl->AddText(ImVec2(p.x + (btn.x - labelSize.x) * 0.5f, p.y + btn.y + 2.0f * S),
+                btnHovered || g_open ? IM_COL32(240, 235, 220, 255) : IM_COL32(200, 195, 180, 220), kToggleLabel);
+            if (btnHovered) {
                 Theme::PushTipStyle();
-                ImGui::SetTooltip("Currency pouch%s", Cfg().hotkey ? std::string(" (")
+                ImGui::SetTooltip("%s the currency pouch%s", g_open ? "Close" : "Open",
+                    Cfg().hotkey ? std::string(" (")
                     .append(1, static_cast<char>('A' + (Cfg().hotkey - ImGuiKey_A))).append(")").c_str() : "");
                 Theme::PopTipStyle();
             }
@@ -296,8 +345,10 @@ namespace FUI::CurrencyPouch
         const float   gap = 6.0f * S;
         const int     rows = (static_cast<int>(forms.size()) + kCols - 1) / kCols;
         const float   topPad = Theme::TitleTopPad();
+        // ★2.1.1: a hint line and the "Deposit all" button under the slots.
+        const float   footerH = ImGui::GetTextLineHeightWithSpacing() + ImGui::GetFrameHeightWithSpacing() + 6.0f * S;
         const ImVec2  size(kCols * cell + (kCols - 1) * gap + 2.0f * Theme::FrameInsetX() + 16.0f * S,
-            WinManager::TitleBarH() + (std::max)(1, rows) * (cell + gap) + 2.0f * Theme::FrameInsetY() + 16.0f * S);
+            WinManager::TitleBarH() + (std::max)(1, rows) * (cell + gap) + footerH + 2.0f * Theme::FrameInsetY() + 16.0f * S);
         const ImVec2 defPos = Cfg().x >= 0.0f && Cfg().y >= 0.0f
                                   ? ImVec2(Cfg().x, Cfg().y)
                                   : ImVec2(mainPos.x + mainSize.x + 44.0f * S, mainPos.y);
@@ -358,6 +409,33 @@ namespace FUI::CurrencyPouch
                 Theme::PopTipStyle();
             }
             ImGui::PopID();
+        }
+
+        // ---- 2.1.1: the hint and "Deposit all" ------------------------------
+        {
+            int total = 0;
+            for (const auto id : forms) {
+                if (const auto it = counts.find(id); it != counts.end()) total += it->second;
+            }
+            const float footY = origin.y + 4.0f * S + (std::max)(1, rows) * (cell + gap) + 2.0f * S;
+            ImGui::SetCursorScreenPos(ImVec2(origin.x + 8.0f * S, footY));
+            if (total == 0) {
+                ImGui::TextDisabled("Orbs you pick up appear here");
+            } else {
+                ImGui::TextDisabled("%d orb%s", total, total == 1 ? "" : "s");
+            }
+            ImGui::SetCursorScreenPos(ImVec2(origin.x + 8.0f * S, ImGui::GetCursorScreenPos().y));
+            if (ImGui::Button("Deposit all")) {
+                // Every orb form out of the board's cells and into this view.
+                // The engine's inventory is not touched: nothing to lose or dupe.
+                Grid::DepositCurrencies(forms);
+                Sfx::SelectOn();
+            }
+            if (ImGui::IsItemHovered()) {
+                Theme::PushTipStyle();
+                ImGui::SetTooltip("Take every orb off the inventory board and keep it here");
+                Theme::PopTipStyle();
+            }
         }
         (void)sk;
         ImGui::End();

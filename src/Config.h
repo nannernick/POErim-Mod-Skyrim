@@ -157,6 +157,12 @@ namespace Config
     // only for a bug report. Read once, at Distribute::Install.
     [[nodiscard]] bool ContainerTrace();
 
+    // ★A DIAGNOSTIC, off by default (2.1.1). Logs every load screen, save load
+    // and task held back by the loading guard (Apply::WorldBusy), and every
+    // death or first-sight change that waited or was skipped because the world
+    // was changing. For the "menu keys dead after a load door" and crash reports.
+    [[nodiscard]] bool DebugLoadLog();
+
     // ---- the grid tooltip ---------------------------------------------------
     //
     // What a rolled item's tooltip is offered beyond the band marker: the item
@@ -201,15 +207,15 @@ namespace Config
 
     // ---- orb drops --------------------------------------------------------
     //
-    // Where a dead enemy's things end up. ★ALL_INVENTORY and ORBS_GROUND leave
+    // Where a dead enemy's things end up (default ALL_INVENTORY since 2.1.1). ★ALL_INVENTORY and ORBS_GROUND leave
     // the enemy's gear in the corpse exactly as vanilla does, which is what
     // ARPG POV's corpse loot expects; the two GROUND modes move weapons, armour
     // and gold out onto the ground and are opt-in.
     enum class GearMode
     {
         kAllGround,       // orbs, weapons, armour and gold on the ground
-        kAllInventory,    // everything in the corpse, orbs included
-        kOrbsGround,      // orbs on the ground, the rest in the corpse (default)
+        kAllInventory,    // everything in the corpse, orbs included (default)
+        kOrbsGround,      // orbs on the ground, the rest in the corpse
         kItemsInventory,  // weapons and armour in the corpse; orbs and gold on the ground
     };
 

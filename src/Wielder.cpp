@@ -172,6 +172,11 @@ namespace
             // reconcile wants to read the finished state.
             const auto handle = actor->GetHandle();
             SKSE::GetTaskInterface()->AddTask([handle]() {
+                // 2.1.1: an equip during a load settles at the next reconcile
+                // (ReconcileLoaded after a save, the next equip otherwise).
+                if (Apply::WorldBusy()) {
+                    return;
+                }
                 if (auto actor = handle.get()) {
                     Wielder::Reconcile(actor.get());
                 }

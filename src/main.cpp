@@ -267,6 +267,8 @@ namespace
             Wielder::Install();
             Orbs::Init();
             Orbs::Install();
+            // 2.1.1: the load-screen watch behind Apply::WorldBusy.
+            Apply::InstallLoadingWatch();
             break;
 
         // These two exist so the Phase 0 timeline is unambiguous in an appended
@@ -284,6 +286,8 @@ namespace
 
         case SKSE::MessagingInterface::kPreLoadGame:
             logger::info(">>>>>>>> LOADING A SAVE <<<<<<<<");
+            // 2.1.1: from here to kPostLoadGame no task touches a reference.
+            Apply::NoteLoading(true, "save loading");
             // Anything the enchanter has detached points into the world about to
             // be replaced. Letting go costs nothing -- the save being loaded has
             // its own copy -- and holding on would be a write through a dangling
@@ -317,15 +321,19 @@ namespace
             if (!g_arpgPov) {
                 RE::SendHUDMessage::ShowHUDMessage("POErim: ARPG POV is required and is not installed");
             }
+            // ★AFTER THE LOAD SCREEN (2.1.1). kPostLoadGame can arrive while the
+            // cells are still attaching; these three walk loaded references and
+            // inventories, so they wait until the world is ready.
+            Apply::NoteLoading(false, a_msg->type == SKSE::MessagingInterface::kNewGame ? "new game" : "save loaded");
             // Actors already in the world at load time never fire
             // TESObjectLoadedEvent. Sweeping here is what makes an existing save
             // pick up loot retroactively rather than only as the player travels.
-            SKSE::GetTaskInterface()->AddTask([]() { Distribute::SweepLoaded(); });
+            Apply::RunWhenWorldReady([]() { Distribute::SweepLoaded(); });
             // Gear that is already worn at load fires no equip event, and the
             // abilities it earned last session did not survive the save. Read
             // the worn weapons back and hand the abilities out again.
-            SKSE::GetTaskInterface()->AddTask([]() { Wielder::ReconcileLoaded(); });
-            SKSE::GetTaskInterface()->AddTask([]() { Orbs::Cleanup(); });
+            Apply::RunWhenWorldReady([]() { Wielder::ReconcileLoaded(); });
+            Apply::RunWhenWorldReady([]() { Orbs::Cleanup(); });
             break;
 
         default:

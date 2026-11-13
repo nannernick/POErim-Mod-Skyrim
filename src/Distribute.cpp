@@ -372,6 +372,9 @@ namespace
 
     void SweepHighOnly()
     {
+        if (Apply::WorldBusy()) {
+            return;  // the next tick, two seconds on, tries again (2.1.1)
+        }
         auto* lists = RE::ProcessLists::GetSingleton();
         if (!lists) {
             return;
@@ -1036,6 +1039,15 @@ namespace
             // crash that reproduces on someone else's machine and not yours.
             if (auto* task = SKSE::GetTaskInterface()) {
                 task->AddTask([formID]() {
+                    // ★NOT WHILE THE WORLD IS CHANGING (2.1.1): the reference
+                    // may be unloading again. Skipped, not held: the high-
+                    // process sweep rolls a nearby actor two seconds later.
+                    if (Apply::WorldBusy()) {
+                        if (Config::DebugLoadLog()) {
+                            logger::info("distribute: {:08X} loaded during a load -- left to the sweep", formID);
+                        }
+                        return;
+                    }
                     auto* form = RE::TESForm::LookupByID(formID);
                     if (!form) {
                         return;

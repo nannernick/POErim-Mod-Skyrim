@@ -881,6 +881,19 @@ namespace FUI::Grid
     // which has no tile. Render thread.
     void ArmCurrency(std::uint32_t a_base);
 
+    // POErim 2.1.1: the pouch's "Deposit all". Forgets every board cell an orb
+    // form still holds (the pouch shows them; nothing in the engine moves) and
+    // rebuilds. Returns how many cells were let go. Render thread.
+    int DepositCurrencies(const std::vector<std::uint32_t>& a_forms);
+
+    // POErim 2.1.1: requests a rebuild when the board was built with the pouch
+    // filter the other way from now (a container or shop opened or closed).
+    void CurrencyFilterTick();
+
+    // POErim 2.1.1: drop the armed orb and any hover state an orb left behind.
+    // Every load, load screen and menu close -- nothing armed survives them.
+    void ResetTransientUi(const char* a_why);
+
     void DrawPouchWindow();
     // GI63: the withdraw window takes the same keys as the quantity slider, so
     // the prompt bar has to know it is up (it is not a LootBarter slider).

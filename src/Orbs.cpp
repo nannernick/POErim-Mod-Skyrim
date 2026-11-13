@@ -282,6 +282,21 @@ namespace
         if (!actor || actor->IsPlayerRef() || !actor->IsDead()) {
             return;
         }
+        // ★A CORPSE WHOSE CELL IS NOT ATTACHED IS NOT TOUCHED (2.1.1). Its
+        // inventory and its 3D may be going away with the cell, and a write
+        // there is the null-pointer write the crash reports show. Nothing is
+        // marked: there is no second death event, so this corpse simply
+        // drops nothing, which is the safe side of the trade.
+        {
+            const auto* cell = actor->GetParentCell();
+            if (!cell || !cell->IsAttached()) {
+                if (Config::DebugLoadLog()) {
+                    logger::info("orbs: {:08X} skipped -- its cell is not attached (unloading or not loaded)",
+                        a_actorID);
+                }
+                return;
+            }
+        }
         // Followers, summons and commanded actors drop nothing: they are not loot.
         if (actor->IsPlayerTeammate() || actor->IsSummoned() || actor->IsCommandedActor()) {
             return;
@@ -359,6 +374,17 @@ namespace
             std::scoped_lock lock{ g_queueLock };
             if (g_queue.empty()) {
                 g_draining = false;
+                return;
+            }
+            // ★THE WORLD IS CHANGING: STOP, KEEP THE QUEUE (2.1.1). Not a
+            // re-queue -- a task added from a task can run in the same drain,
+            // and a loop that waits that way never yields the frame. Resume()
+            // picks it up when the load screen goes down.
+            if (Apply::WorldBusy()) {
+                g_draining = false;
+                if (Config::DebugLoadLog()) {
+                    logger::info("orbs: {} death(s) held -- the world is loading", g_queue.size());
+                }
                 return;
             }
             next = g_queue.front();
@@ -532,6 +558,24 @@ void Orbs::Init()
     logger::info("orbs: {} of {} orb forms found in {}; VendorItemGem {}, orb mesh '{}'", found,
         roll::kOrbCount, kPlugin, gemKeyword ? "found" : "NOT FOUND (ARPG POV will not label orbs)",
         g_orbModel);
+}
+
+void Orbs::Resume()
+{
+    bool start = false;
+    {
+        std::scoped_lock lock{ g_queueLock };
+        start = !g_queue.empty() && !g_draining;
+        if (start) {
+            g_draining = true;
+        }
+    }
+    if (start) {
+        if (Config::DebugLoadLog()) {
+            logger::info("orbs: resuming the death queue after the load");
+        }
+        SKSE::GetTaskInterface()->AddTask([]() { Drain(); });
+    }
 }
 
 void Orbs::Install()

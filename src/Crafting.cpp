@@ -58,6 +58,7 @@ namespace
         bool                found{ false };
         bool                worn{ false };
         bool                wornLeft{ false };
+        bool                questSibling{ false };   // another unit of this form is a quest item (2.1.1)
     };
 
     void NoteWorn(Unit& a_unit)
@@ -88,12 +89,21 @@ namespace
             unit.object = object;
 
             RE::ExtraDataList* plainWorn = nullptr;
+            int                listed = 0;   // units that have a list of their own
             if (entry && entry->extraLists) {
                 for (auto* xList : *entry->extraLists) {
                     if (!xList) {
                         continue;
                     }
+                    listed += xList->GetCount();
                     const auto* xEnch = xList->GetByType<RE::ExtraEnchantment>();
+                    // ★A QUEST ITEM IS NEVER THE UNIT (2.1.1), whichever way it
+                    // is asked for. The enchantment branch below used to match
+                    // a quest-aliased list by its enchantment alone.
+                    if (xList->HasType(RE::ExtraDataType::kAliasInstanceArray)) {
+                        unit.questSibling = true;
+                        continue;
+                    }
                     if (a_target.enchantment != 0) {
                         if (xEnch && xEnch->enchantment &&
                             xEnch->enchantment->GetFormID() == a_target.enchantment) {
@@ -126,6 +136,15 @@ namespace
             if (a_target.enchantment == 0) {
                 // No loose list: the worn one if there is one, otherwise a bare
                 // stack unit, which ToNewInstance will give an instance.
+                // ★ONLY IF A BARE UNIT EXISTS (2.1.1). With every unit on a list
+                // of its own -- the one quest item, say -- "a bare stack unit"
+                // named nothing, and the bare-unit path then dropped (or, for an
+                // enchanted record, removed and replaced) whichever unit the
+                // engine picked -- the quest item. One way a quest item could be
+                // "reset" by a hover (first sight) or an orb.
+                if (!plainWorn && count - listed <= 0) {
+                    return unit;   // found stays false: "no longer in your inventory"
+                }
                 unit.xList = plainWorn;
                 unit.found = true;
                 NoteWorn(unit);
@@ -371,6 +390,13 @@ namespace
             return reason;
         }
         if (a_out.unit.xList && a_out.unit.xList->HasType(RE::ExtraDataType::kAliasInstanceArray)) {
+            return "Quest items can't be crafted";
+        }
+        // ★A BARE UNIT BESIDE A QUEST COPY (2.1.1). The bare-unit paths hand the
+        // engine a count, not an instance (RemoveItem with no list), and the
+        // engine picks which unit leaves -- it may be the quest one. Refused
+        // rather than risked; the quest item itself is never touched.
+        if (!a_out.unit.xList && a_out.unit.questSibling) {
             return "Quest items can't be crafted";
         }
 

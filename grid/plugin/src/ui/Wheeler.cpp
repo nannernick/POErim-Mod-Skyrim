@@ -1,6 +1,7 @@
 ﻿#include "ui/Wheeler.h"
 
 #include "game/Costume.h"
+#include "ui/CurrencyPouch.h"
 #include "ui/Equip.h"
 #include "ui/Fallback.h"
 #include "ui/IconCache.h"
@@ -3302,6 +3303,16 @@ namespace FUI::Wheeler
     }
 
     bool Enabled() { return g_enabled; }
+
+    void ForceClose(const char* a_why)
+    {
+        const bool wasOpen = g_open;
+        CloseWheel();
+        if (wasOpen || CurrencyPouch::DebugUiState()) {
+            SKSE::log::info("[UISTATE] wheel {} ({})", wasOpen ? "was OPEN -- closed" : "closed already",
+                            a_why ? a_why : "?");
+        }
+    }
 
     void SetEnabled(bool a_on)
     {

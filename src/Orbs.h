@@ -29,6 +29,12 @@ namespace Orbs
     void Init();
     void Install();   // the death sink; after Init
 
+    // Picks the death queue up again after a load (2.1.1). A drain that finds
+    // the world loading stops and leaves the queue as it is; nothing re-queues
+    // itself to wait. Called by the loading watch (Apply) when the world is
+    // back. GAME THREAD.
+    void Resume();
+
     [[nodiscard]] bool Available();
     [[nodiscard]] RE::TESObjectMISC* Form(roll::Orb a_orb);
     // The orb this base form is, or -1. Any thread: compares cached ids only.

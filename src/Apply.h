@@ -21,6 +21,7 @@
 
 #include "roll/Roll.h"
 
+#include <functional>
 #include <string>
 #include <string_view>
 
@@ -177,6 +178,26 @@ namespace Apply
     // surgery apart from the world's, and this is how: the event is dispatched
     // synchronously, on this thread, from inside PickUpObject.
     [[nodiscard]] bool InSurgery();
+
+    // ---- 2.1.1: the loading guard ----------------------------------------------
+    //
+    // ★NOTHING TOUCHES A REFERENCE OR AN INVENTORY WHILE THE WORLD IS CHANGING.
+    // A save load, and every load door, unload one set of cells and attach
+    // another; a task queued just before (a death, an actor-loaded roll, a
+    // first-sight implicit) used to run in the middle of that. True from
+    // kPreLoadGame to kPostLoadGame, while the LoadingMenu is open, and while
+    // the player has no attached cell or no 3D. GAME THREAD.
+    [[nodiscard]] bool WorldBusy();
+
+    // Run a_task on the game thread once the world is ready: now (as a task) if
+    // it already is, otherwise when the load screen goes down. Nothing re-queues
+    // itself to wait -- SKSE runs a task queued from a task in the same drain,
+    // which is the hang Distribute.cpp describes.
+    void RunWhenWorldReady(std::function<void()> a_task);
+
+    // main.cpp: the SKSE load messages. Installs the LoadingMenu watch once.
+    void NoteLoading(bool a_loading, const char* a_why);
+    void InstallLoadingWatch();
 
     // ---- 2.1.0: implicits replace vanilla enchantments ----------------------
 

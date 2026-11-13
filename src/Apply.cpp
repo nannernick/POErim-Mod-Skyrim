@@ -7,10 +7,14 @@
 #include "Apply.h"
 
 #include "Config.h"
+#include "Orbs.h"
 #include "Persist.h"
 
 #include <algorithm>
+#include <atomic>
 #include <format>
+#include <functional>
+#include <mutex>
 #include <shared_mutex>
 #include <unordered_map>
 #include <unordered_set>
@@ -855,6 +859,129 @@ namespace
 bool Apply::InSurgery()
 {
     return t_surgeryDepth > 0;
+}
+
+namespace
+{
+    std::atomic<bool>                  g_loadingSave{ false };   // kPreLoadGame .. kPostLoadGame
+    std::atomic<bool>                  g_loadScreen{ false };    // LoadingMenu open
+    std::mutex                         g_readyLock;
+    std::vector<std::function<void()>> g_whenReady;
+
+    void FlushWhenReady(const char* a_why)
+    {
+        std::vector<std::function<void()>> tasks;
+        {
+            std::scoped_lock lock{ g_readyLock };
+            tasks.swap(g_whenReady);
+        }
+        if (tasks.empty()) {
+            return;
+        }
+        if (Config::DebugLoadLog()) {
+            logger::info("loading: {} -- running {} task(s) held for the load", a_why, tasks.size());
+        }
+        auto* intfc = SKSE::GetTaskInterface();
+        for (auto& task : tasks) {
+            if (intfc) {
+                intfc->AddTask(std::move(task));
+            }
+        }
+    }
+
+    class LoadingSink : public RE::BSTEventSink<RE::MenuOpenCloseEvent>
+    {
+    public:
+        static LoadingSink* GetSingleton()
+        {
+            static LoadingSink singleton;
+            return &singleton;
+        }
+
+        RE::BSEventNotifyControl ProcessEvent(const RE::MenuOpenCloseEvent* a_event,
+            RE::BSTEventSource<RE::MenuOpenCloseEvent>*) override
+        {
+            if (!a_event || a_event->menuName != RE::LoadingMenu::MENU_NAME) {
+                return RE::BSEventNotifyControl::kContinue;
+            }
+            g_loadScreen.store(a_event->opening);
+            if (Config::DebugLoadLog()) {
+                logger::info("loading: load screen {} (save loading {})", a_event->opening ? "UP" : "DOWN",
+                    g_loadingSave.load());
+            }
+            if (!a_event->opening && !g_loadingSave.load()) {
+                // A task, so it runs after the engine has finished attaching the cell.
+                if (auto* intfc = SKSE::GetTaskInterface()) {
+                    intfc->AddTask([]() {
+                        FlushWhenReady("load screen down");
+                        Orbs::Resume();
+                    });
+                }
+            }
+            return RE::BSEventNotifyControl::kContinue;
+        }
+    };
+}
+
+bool Apply::WorldBusy()
+{
+    if (g_loadingSave.load() || g_loadScreen.load()) {
+        return true;
+    }
+    if (auto* ui = RE::UI::GetSingleton(); ui && ui->IsMenuOpen(RE::LoadingMenu::MENU_NAME)) {
+        return true;
+    }
+    auto* player = RE::PlayerCharacter::GetSingleton();
+    return !player || !CanDropFrom(player);
+}
+
+void Apply::RunWhenWorldReady(std::function<void()> a_task)
+{
+    if (!a_task) {
+        return;
+    }
+    if (!g_loadingSave.load() && !g_loadScreen.load()) {
+        if (auto* intfc = SKSE::GetTaskInterface()) {
+            intfc->AddTask(std::move(a_task));
+        }
+        return;
+    }
+    std::scoped_lock lock{ g_readyLock };
+    g_whenReady.push_back(std::move(a_task));
+}
+
+void Apply::NoteLoading(bool a_loading, const char* a_why)
+{
+    g_loadingSave.store(a_loading);
+    if (Config::DebugLoadLog()) {
+        logger::info("loading: {} (save loading {}, load screen {})", a_why ? a_why : "?", a_loading,
+            g_loadScreen.load());
+    }
+    if (!a_loading) {
+        // The load screen may already be down by kPostLoadGame; if not, the
+        // watch flushes when it goes.
+        auto* ui = RE::UI::GetSingleton();
+        const bool screen = ui && ui->IsMenuOpen(RE::LoadingMenu::MENU_NAME);
+        g_loadScreen.store(screen);
+        if (!screen) {
+            if (auto* intfc = SKSE::GetTaskInterface()) {
+                intfc->AddTask([]() {
+                    FlushWhenReady("save loaded");
+                    Orbs::Resume();
+                });
+            }
+        }
+    }
+}
+
+void Apply::InstallLoadingWatch()
+{
+    if (auto* ui = RE::UI::GetSingleton()) {
+        ui->AddEventSink<RE::MenuOpenCloseEvent>(LoadingSink::GetSingleton());
+        logger::info("loading: load-screen watch installed");
+    } else {
+        logger::error("loading: no UI singleton; tasks will not wait for load screens");
+    }
 }
 
 bool Apply::CanDropFrom(RE::TESObjectREFR* a_refr)
