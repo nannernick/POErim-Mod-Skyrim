@@ -6,6 +6,39 @@ POErim is a fork of **Diablo In Skyrim (DiabloRim)** by tangwesley. The loot sys
 
 > **Do not install POErim alongside the original Diablo In Skyrim.** They are the same plugin (`DiabloInSkyrim.dll`) and share one co-save. POErim replaces it, and reads its saves.
 
+## The orbs
+
+Nine crafting orbs, each with its own face and its own mood. They are hand-built 128x128 pixel art with a thick black outline, drawn for this mod. They sit in your inventory at 1x1, and right-clicking one lets you use it on an item.
+
+<p align="center">
+<table>
+<tr>
+<td align="center"><img src="data/GridInventory_fallback/item/DiabloInSkyrim.esp_0x000801.png" width="88" alt="transmute orb"></td>
+<td align="center"><img src="data/GridInventory_fallback/item/DiabloInSkyrim.esp_0x000802.png" width="88" alt="augment orb"></td>
+<td align="center"><img src="data/GridInventory_fallback/item/DiabloInSkyrim.esp_0x000803.png" width="88" alt="alchemy orb"></td>
+<td align="center"><img src="data/GridInventory_fallback/item/DiabloInSkyrim.esp_0x000804.png" width="88" alt="exalt orb"></td>
+<td align="center"><img src="data/GridInventory_fallback/item/DiabloInSkyrim.esp_0x000805.png" width="88" alt="chaos orb"></td>
+<td align="center"><img src="data/GridInventory_fallback/item/DiabloInSkyrim.esp_0x000806.png" width="88" alt="scour orb"></td>
+<td align="center"><img src="data/GridInventory_fallback/item/DiabloInSkyrim.esp_0x000807.png" width="88" alt="divine orb"></td>
+<td align="center"><img src="data/GridInventory_fallback/item/DiabloInSkyrim.esp_0x000808.png" width="88" alt="vaal orb"></td>
+<td align="center"><img src="data/GridInventory_fallback/item/DiabloInSkyrim.esp_0x000809.png" width="88" alt="regal orb"></td>
+</tr>
+<tr>
+<td align="center"><sub><b>Transmutation</b></sub></td>
+<td align="center"><sub><b>Augmentation</b></sub></td>
+<td align="center"><sub><b>Alchemy</b></sub></td>
+<td align="center"><sub><b>Exalted</b></sub></td>
+<td align="center"><sub><b>Chaos</b></sub></td>
+<td align="center"><sub><b>Scouring</b></sub></td>
+<td align="center"><sub><b>Divine</b></sub></td>
+<td align="center"><sub><b>Vaal</b></sub></td>
+<td align="center"><sub><b>Regal</b></sub></td>
+</tr>
+</table>
+</p>
+
+<sub>Left to right: Transmutation (serene), Augmentation (furious, with spikes and loose shards), Alchemy (startled, with four bubbles popping off it), Exalted (stern, under a crown), Chaos (unhinged, mismatched eyes), Scouring (drowsy, slashed), Divine (gold with sapphire, a halo round its head, face tipped up), Vaal (a menacing red rock), Regal (half cobalt, half gold, crowned).</sub>
+
 ## Status (2.1.0)
 
 | | |
@@ -56,17 +89,19 @@ The debug menu's Integration page can list exactly which vanilla enchantments in
 
 Orbs drop from kills (on the ground by default). In Grid Inventory, right-click an orb, then click an item. Shift keeps the orb on the cursor; right-click or Esc puts it back. An orb that can't be used does nothing and is **not** spent, and the item is left exactly as it was.
 
-| Orb | Works on | Does |
-|---|---|---|
-| Transmutation | normal | magic, 1 mod |
-| Augmentation | magic with exactly 1 mod | adds the second (the other kind), stays magic |
-| **Regal** (new) | magic with exactly 2 mods | adds a third; nothing it had changes; now rare. On 1 mod: "Needs 2 mods; use Augmentation first" |
-| Alchemy | normal | rare, 4 mods |
-| Exalted | rare, 3-5 mods | adds a mod, up to 6 (5th and 6th gated at item level 35/40) |
-| Chaos | rare, 3-6 mods | rerolls every mod, keeping the count |
-| Scouring | any mods | removes every mod: normal again; implicits stay |
-| Divine | anything with a range | rerolls every value, implicits included, inside its tier |
-| Vaal | anything not corrupted | corrupts it (see below) |
+| | Orb | Works on | Does | Default drop share |
+|---|---|---|---|---|
+| <img src="data/GridInventory_fallback/item/DiabloInSkyrim.esp_0x000801.png" width="48" alt="transmute orb"> | **Transmutation** | Normal item | Magic, 1 mod | 39.4% |
+| <img src="data/GridInventory_fallback/item/DiabloInSkyrim.esp_0x000802.png" width="48" alt="augment orb"> | **Augmentation** | Magic, exactly 1 mod | Adds the second mod (the other kind); stays magic | 33.1% |
+| <img src="data/GridInventory_fallback/item/DiabloInSkyrim.esp_0x000803.png" width="48" alt="alchemy orb"> | **Alchemy** | Normal item | Rare, 4 mods | 4.3% |
+| <img src="data/GridInventory_fallback/item/DiabloInSkyrim.esp_0x000804.png" width="48" alt="exalt orb"> | **Exalted** | Rare, 3-5 mods | Adds a mod, up to 6 (5th and 6th gated at item level 35/40) | 3.4% |
+| <img src="data/GridInventory_fallback/item/DiabloInSkyrim.esp_0x000805.png" width="48" alt="chaos orb"> | **Chaos** | Rare, 3-6 mods | Rerolls every mod, keeping the count | 6.7% |
+| <img src="data/GridInventory_fallback/item/DiabloInSkyrim.esp_0x000806.png" width="48" alt="scour orb"> | **Scouring** | Any item with mods | Removes every mod: normal again; implicits stay | 7.7% |
+| <img src="data/GridInventory_fallback/item/DiabloInSkyrim.esp_0x000807.png" width="48" alt="divine orb"> | **Divine** | Anything with a range | Rerolls every value, implicits included, inside its tier | 0.6% |
+| <img src="data/GridInventory_fallback/item/DiabloInSkyrim.esp_0x000808.png" width="48" alt="vaal orb"> | **Vaal** | Anything not corrupted | Corrupts it (see Vaal Orb below) | 1.0% |
+| <img src="data/GridInventory_fallback/item/DiabloInSkyrim.esp_0x000809.png" width="48" alt="regal orb"> | **Regal (new)** | Magic, exactly 2 mods | Adds a third mod, keeps the others; now rare. On 1 mod: "Needs 2 mods; use Augmentation first" | 3.8% |
+
+Drop share is each orb's weight out of the total at the default `OrbWeight*` settings, once an orb drops.
 
 **Corrupted** items are locked: no orb works on them, including Divine and Scouring, and no value is rerolled. The refusal says "Corrupted".
 
@@ -97,7 +132,7 @@ A separate window beside the inventory, opened by the orb button on the inventor
 | Required | [SKSE64](https://skse.silverlock.org/), [Address Library for SKSE Plugins](https://www.nexusmods.com/skyrimspecialedition/mods/32444) |
 | Required | [ARPG POV](https://www.nexusmods.com/skyrimspecialedition/mods/198647). Without it POErim logs an error and shows a message on load, and keeps running so saves aren't broken. |
 | Required | `DiabloInSkyrim.esp` (ESL-flagged, in the mod) for the orbs |
-| Included | POErim's Grid Inventory build, for colours, tooltips, prices, using orbs and the pouch. It replaces the Nexus Grid Inventory. |
+| Included + required | POErim's Grid Inventory build (`GridInventory.dll`), for colours, tooltips, prices, using orbs and the pouch. It overwrites the DLL of the Nexus Grid Inventory but does not include that mod's icon pack, item and category tables, slot art or languages, so keep the original installed and let POErim win the file conflict. |
 | Optional | SKSE Menu Framework, for the debug menu |
 | Optional | Socketing, Summermyst (affix add-on table included) |
 
@@ -159,6 +194,10 @@ Every crafting step checks the rules and prints `<-- BUG` on any break: rarity c
 ## Building
 
 GitHub Actions builds every push (`.github/workflows/main.yml`) and fails on a stale `DiabloInSkyrim.esp` (`python tools/esp/build_esp.py`) or a harness `<-- BUG`. Locally: Visual Studio 2022, CMake, vcpkg with the `x64-windows-static` triplet; CommonLibSSE-NG is fetched at a pinned commit. The orb sprites come from `python tools/orbs/make_orbs.py` (needs Pillow).
+
+## Replacing the orb icons
+
+Each orb's inventory icon is one PNG: `SKSE/Plugins/GridInventory_fallback/item/DiabloInSkyrim.esp_0x000801.png` (Transmutation) through `0x000809` (Regal), in the order of the table above. Drop your own 128x128 PNGs over them, then run **Icon cache reset** in Grid Inventory's Settings → Icons. To regenerate the shipped art, edit and run `python tools/orbs/make_orbs.py`.
 
 ## Credits
 
